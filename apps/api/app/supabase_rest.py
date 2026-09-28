@@ -36,14 +36,20 @@ async def rest(
 ) -> Any:
     base, _ = require_supabase()
     url = f"{base}/rest/v1/{path.lstrip('/')}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.request(
-            method,
-            url,
-            params=params,
-            headers=headers_for(token, prefer),
-            content=json.dumps(body, default=str) if body is not None else None,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request(
+                method,
+                url,
+                params=params,
+                headers=headers_for(token, prefer),
+                content=json.dumps(body, default=str) if body is not None else None,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            503,
+            "A API não conseguiu contactar o Supabase. Verifica a ligação à rede e SUPABASE_URL.",
+        ) from exc
     if response.is_error:
         if response.status_code in (401, 403):
             raise HTTPException(response.status_code, "O Supabase recusou o acesso a este registo.")
@@ -62,8 +68,14 @@ async def rest(
 
 async def verify_access_token(token: str) -> dict[str, Any]:
     base, _ = require_supabase()
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(f"{base}/auth/v1/user", headers=headers_for(token))
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{base}/auth/v1/user", headers=headers_for(token))
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            503,
+            "A API não conseguiu validar a sessão no Supabase. Verifica a ligação à rede.",
+        ) from exc
     if response.status_code in (401, 403):
         raise HTTPException(401, "A sessão expirou. Inicia sessão novamente.")
     if response.is_error:

@@ -1,7 +1,7 @@
 "use client";
 
 import { createClient, type Session } from "@supabase/supabase-js";
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 type ProposalRequest = {
   id: string;
@@ -27,6 +27,16 @@ type Knowledge = Record<string, Array<Record<string, any>>>;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+type BrowserGlobal = typeof globalThis & { __ozSupabaseClient?: ReturnType<typeof createClient> };
+
+function getSupabaseClient() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  if (typeof window === "undefined") return createClient(SUPABASE_URL, SUPABASE_KEY);
+  const browserGlobal = globalThis as BrowserGlobal;
+  browserGlobal.__ozSupabaseClient ??= createClient(SUPABASE_URL, SUPABASE_KEY);
+  return browserGlobal.__ozSupabaseClient;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   DRAFT: "Rascunho", ANALYSING: "A analisar", NEEDS_INFORMATION: "Falta informação",
   TECHNICAL_SCOPE: "Âmbito técnico", PRICING: "Orçamentação", TECHNICAL_REVIEW: "Revisão técnica",
@@ -46,7 +56,15 @@ async function api<T>(token: string, path: string, options: RequestInit = {}): P
   const headers = new Headers(options.headers);
   headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Não foi possível contactar a API em ${API_URL}. Confirma se a API Python está a correr.`);
+    }
+    throw error;
+  }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = payload?.detail ?? payload?.message ?? `Pedido falhou (${response.status})`;
@@ -67,10 +85,7 @@ function displayDate(value?: string | null) {
 }
 
 export default function Home() {
-  const supabase = useMemo(() => {
-    if (!SUPABASE_URL || !SUPABASE_KEY) return null;
-    return createClient(SUPABASE_URL, SUPABASE_KEY);
-  }, []);
+  const supabase = getSupabaseClient();
   const [session, setSession] = useState<Session | null>(null);
   const [page, setPage] = useState<"dashboard" | "new" | "detail" | "knowledge">("dashboard");
   const [requests, setRequests] = useState<ProposalRequest[]>([]);
@@ -406,5 +421,5 @@ function KnowledgePage({ token }: { token: string }) {
   const references: Array<{ label: string; rows: Array<Record<string, any>> }> = knowledge ? [
     { label: "Ensaios", rows: knowledge.tests }, { label: "Causas", rows: knowledge.causes }, { label: "Soluções", rows: knowledge.solutions },
   ] : [];
-  return <><section className="welcome-row"><div><p className="eyebrow">CONSULTA TÉCNICA</p><h1>Base de conhecimento</h1><p className="subhead">Referências para apoiar a análise de patologias, ensaios e recomendações.</p></div><span className="count-pill">{knowledge ? pathologies.length + " patologias" : "A carregar…"}</span></section>{error && <div className="inline-error">{error}<br />Aplica as migrações do Supabase com `npx supabase db push` para carregar o catálogo técnico.</div>}<section className="panel knowledge-panel"><div className="toolbar"><label className="search-box"><span>⌕</span><input placeholder="Pesquisar patologia, código ou grupo…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">Todos os grupos</option>{groups.map((name) => <option key={name}>{name}</option>)}</select></div>{!knowledge ? <div className="empty-state"><span className="loader" />A carregar a base técnica…</div> : <><div className="knowledge-grid">{pathologies.map((row) => <article className="knowledge-card" key={row.code}><div className="knowledge-card-top"><span>{row.code}</span>{row.not_in_manual && <span className="category-chip">Complementar</span>}</div><h3>{row.name}</h3><p>{row.group_name}</p><div className="severity-range">Severidade de referência <b>{row.sev_min}–{row.sev_max}</b></div></article>)}</div>{pathologies.length === 0 && <div className="empty-state">Não foram encontradas patologias.</div>}</>}</section>{knowledge && <div className="knowledge-reference-grid">{references.map(({ label, rows }) => <section className="panel ref-panel" key={label}><p className="eyebrow">CATÁLOGO</p><h2>{label}</h2>{rows.slice(0, 7).map((row) => <div className="ref-row" key={row.code}><b>{row.code}</b><span>{row.name}</span></div>)}<small>{rows.length} referências</small></section>)}</div>}</>;
+  return <><section className="welcome-row"><div><p className="eyebrow">CONSULTA TÉCNICA</p><h1>Base de conhecimento</h1><p className="subhead">Referências para apoiar a análise de patologias, ensaios e recomendações.</p></div><span className="count-pill">{knowledge ? pathologies.length + " patologias" : "A carregar…"}</span></section>{error && <div className="inline-error">{error}</div>}<section className="panel knowledge-panel"><div className="toolbar"><label className="search-box"><span>⌕</span><input placeholder="Pesquisar patologia, código ou grupo…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">Todos os grupos</option>{groups.map((name) => <option key={name}>{name}</option>)}</select></div>{!knowledge ? <div className="empty-state"><span className="loader" />A carregar a base técnica…</div> : <><div className="knowledge-grid">{pathologies.map((row) => <article className="knowledge-card" key={row.code}><div className="knowledge-card-top"><span>{row.code}</span>{row.not_in_manual && <span className="category-chip">Complementar</span>}</div><h3>{row.name}</h3><p>{row.group_name}</p><div className="severity-range">Severidade de referência <b>{row.sev_min}–{row.sev_max}</b></div></article>)}</div>{pathologies.length === 0 && <div className="empty-state">Não foram encontradas patologias.</div>}</>}</section>{knowledge && <div className="knowledge-reference-grid">{references.map(({ label, rows }) => <section className="panel ref-panel" key={label}><p className="eyebrow">CATÁLOGO</p><h2>{label}</h2>{rows.slice(0, 7).map((row) => <div className="ref-row" key={row.code}><b>{row.code}</b><span>{row.name}</span></div>)}<small>{rows.length} referências</small></section>)}</div>}</>;
 }
