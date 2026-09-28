@@ -64,12 +64,17 @@ OPENAI_MODEL=gpt-4.1-mini
 RESEND_API_KEY=
 EMAIL_FROM=
 WEB_ORIGIN=http://localhost:3000
-COMPANY_NAME=OZ Diagnóstico e Engenharia
-COMPANY_ADDRESS=
-COMPANY_EMAIL=
-COMPANY_PHONE=
+COMPANY_NAME=Diagnóstico, Levantamento e Controlo de Qualidade em Estruturas e Fundações, Lda.
+COMPANY_ADDRESS=Rua Prof. Reinaldo dos Santos, 48 - B, 1500-508 Lisboa
+COMPANY_EMAIL=ger@oz-diagnostico.pt
+COMPANY_PHONE=213 563 371
+COMPANY_FAX=213 153 550
+COMPANY_WEBSITE=www.oz-diagnostico.pt
 PROPOSAL_SIGNATORY=
-PROPOSAL_PAYMENT_TERMS=
+PROPOSAL_PAYMENT_TERMS=40%, com a adjudicação. O restante a 30 dias da fatura, após o envio do relatório.
+PROPOSAL_EXECUTION_PERIOD=Início a combinar. Inspeção visual e relatório: 3 semanas. Ensaios e relatório respetivo: 5 semanas.
+PROPOSAL_QUALITY_STATEMENT="Sistema de Gestão da Qualidade segundo a NP EN ISO 9001:2015, certificado pela APCER, para o âmbito indicado no documento de referência."
+PROPOSAL_AFFILIATIONS_STATEMENT="Gestor da Qualidade LNEC e membro do GECoRPA - Grémio do Património."
 ```
 
 As chaves OpenAI e Resend só são lidas pela API Python. Os dados da empresa no fim do exemplo alimentam o cabeçalho e rodapé do PDF; `PROPOSAL_PAYMENT_TERMS` configura as condições comerciais fixas, e deixa a assinatura vazia até configurares o profissional responsável. Mantém os ficheiros `.env` locais e não os envies para GitHub. A API passa o token do utilizador ao Supabase para que a RLS continue a limitar cada operação.
@@ -101,20 +106,23 @@ Abre [http://localhost:3000](http://localhost:3000). A documentação interativa
 - Registo e início de sessão com Supabase Auth.
 - Registo de pedidos a partir de texto, email colado ou anexo PDF/DOCX/XLSX/TXT/CSV/EML; os originais ficam num bucket privado e o texto extraído no pedido.
 - Extração em Python do assunto, empresa cliente, NIF/NUIT, endereço, telefone, email, obra, localização, objetivo, âmbito e assinatura do remetente; a empresa cliente fica separada de quem enviou o email.
-- Extração estruturada por OpenAI com alternativa por regras sem chave de IA e indicação dos campos em falta.
+- Extração estruturada por OpenAI, validada por esquema Pydantic, com alternativa por regras sem chave de IA. O orquestrador separa o tipo de pedido, problema, dados do cliente/remetente e recomendações de visita.
 - Revisão e gravação dos dados extraídos, estado do pedido, agenda de visitas e acesso aos anexos privados.
 - Criação numerada de proposta, catálogo de serviços, quantidades, preços, IVA e totais.
 - Geração e transferência de PDF, versões imutáveis da proposta e estados de aprovação/envio.
 - Sugestões de serviços elétricos a partir do âmbito do email, com preço zero até validação técnica.
 - Mapeamento preliminar Python de patologias da base técnica para causas, ensaios e soluções codificados; quando a chave OpenAI está configurada, a seleção de candidatos é refinada por IA e limitada aos códigos existentes.
-- Geração de proposta PDF em seis secções, inspirada na estrutura do documento de referência: objeto, considerações prévias, condições técnicas e ensaios, mapeamento de patologias, honorários e condições comerciais.
+- Geração PDF com o cabeçalho gráfico do documento de referência, bloco de destinatário/referência, secções numeradas, paginação e conteúdos de honorários, pagamento, prazos, exclusões e qualidade. A assinatura manuscrita antiga não é reutilizada.
 - Biblioteca de propostas: pesquisa de propostas geradas, carregamento de propostas antigas e consulta de referências semelhantes. Os ficheiros carregados ficam privados e não são partilhados entre utilizadores.
 - Envio manual pelo Resend após aprovação, com o PDF gerado anexado automaticamente.
 - Consulta da base técnica de patologias, causas, ensaios e soluções.
 
+A arquitetura atual está descrita em [`docs/AI_ARCHITECTURE.md`](docs/AI_ARCHITECTURE.md), incluindo o fluxo do orquestrador e os limites de RAG.
+
 ## Limites a conhecer
 
 - PDF digitalizado ainda requer OCR; o sistema informa quando não consegue extrair texto.
+- A base técnica atual usa tabelas relacionais e pesquisa fuzzy de propostas; ainda não existe ingestão de documentos técnicos, embeddings ou pgvector.
 - A primeira migração cria dados com isolamento RLS por utilizador. As propostas e clientes não são automaticamente partilhados entre contas distintas.
 - As referências de diagnóstico herdadas do sistema anterior precisam de validação de um engenheiro antes de uso técnico.
 - A percentagem de correspondência técnica mede aderência textual ao catálogo, não a probabilidade de uma patologia. Causas e soluções são hipóteses para confirmação pelo engenheiro.

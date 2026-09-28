@@ -1,5 +1,4 @@
 import html
-import json
 import re
 import asyncio
 import mimetypes
@@ -16,7 +15,8 @@ from pydantic import BaseModel, Field
 from app.auth import CurrentUser, current_user
 from app.config import settings
 from app.documents import extract_mqt_rows, extract_upload
-from app.email_intake import looks_like_email, parse_email_request
+from app.email_intake import looks_like_email
+from app.ai.orchestrator import orchestrate_request_analysis
 from app.proposal_pdf import build_proposal_pdf
 from app.supabase_rest import rest
 from app.storage import signed_document_url, upload_document
@@ -29,47 +29,6 @@ STATUSES = {
     "TECHNICAL_REVIEW", "READY_FOR_APPROVAL", "APPROVED", "GENERATED", "SENT",
     "CLIENT_REVIEW", "ACCEPTED", "REJECTED", "EXPIRED", "CANCELLED",
 }
-
-ANALYSIS_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "client_name": {"type": ["string", "null"]},
-        "client_email": {"type": ["string", "null"]},
-        "client_tax_id": {"type": ["string", "null"]},
-        "client_address": {"type": ["string", "null"]},
-        "client_phone": {"type": ["string", "null"]},
-        "client_contact_name": {"type": ["string", "null"]},
-        "client_contact_role": {"type": ["string", "null"]},
-        "client_contact_email": {"type": ["string", "null"]},
-        "project_name": {"type": ["string", "null"]},
-        "location": {"type": ["string", "null"]},
-        "construction_year": {"type": ["integer", "null"]},
-        "basement_count": {"type": ["integer", "null"]},
-        "objective": {"type": ["string", "null"]},
-        "deadline": {"type": ["string", "null"]},
-        "categories": {"type": "array", "items": {"type": "string"}},
-        "constraints": {"type": "array", "items": {"type": "string"}},
-        "requested_services": {"type": "array", "items": {"type": "string"}},
-        "requested_conditions": {"type": "array", "items": {"type": "string"}},
-        "source_subject": {"type": ["string", "null"]},
-        "sender_name": {"type": ["string", "null"]},
-        "sender_role": {"type": ["string", "null"]},
-        "sender_organization": {"type": ["string", "null"]},
-        "sender_email": {"type": ["string", "null"]},
-        "sender_phone": {"type": ["string", "null"]},
-        "missing_information": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "client_name", "client_email", "project_name", "location", "construction_year",
-        "basement_count", "objective", "deadline", "categories", "constraints",
-        "requested_services", "requested_conditions", "source_subject", "sender_name",
-        "sender_role", "sender_organization", "sender_email", "sender_phone",
-        "client_tax_id", "client_address", "client_phone", "client_contact_name",
-        "client_contact_role", "client_contact_email", "missing_information",
-    ],
-}
-
 
 class StatusChange(BaseModel):
     status: str
@@ -109,80 +68,6 @@ class VisitCreate(BaseModel):
 
 class VisitStatusUpdate(BaseModel):
     status: str
-
-
-def fallback_analysis(text: str, fields: dict[str, Any]) -> dict[str, Any]:
-    email_match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)
-    email = fields.get("client_email") or (email_match.group(0) if email_match else None)
-    categories = []
-    lowered = text.lower()
-    for words, category in [
-        (("fissur", "rachad", "rache"), "Patologia / fissuração"),
-        (("betão", "concreto", "carote", "carbonatação", "cloreto"), "Ensaios de betão"),
-        (("humidade", "infiltração", "água"), "Humidade / infiltração"),
-        (("monitor", "fissurómetro"), "Monitorização"),
-        (("inspeção", "vistoria", "diagnóstico"), "Inspeção / diagnóstico"),
-    ]:
-        if any(word in lowered for word in words):
-            categories.append(category)
-    result: dict[str, Any] = {
-        "client_name": fields.get("client_name") or None,
-        "client_email": email,
-        "project_name": fields.get("project_name") or None,
-        "location": fields.get("location") or None,
-        "construction_year": None,
-        "basement_count": None,
-        "objective": text.strip()[:600] or None,
-        "deadline": fields.get("deadline") or None,
-        "categories": categories,
-        "constraints": [],
-    }
-    missing = []
-    for key, label in [("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
-                       ("project_name", "Nome da obra"), ("location", "Localização")]:
-        if not result.get(key):
-            missing.append(label)
-    result["missing_information"] = missing
-    return result
-
-
-async def analyze_with_openai(text: str) -> tuple[dict[str, Any], str | None]:
-    if not settings.openai_api_key:
-        return {}, None
-    payload = {
-        "model": settings.openai_model,
-        "input": [{
-            "role": "user",
-            "content": [{
-                "type": "input_text",
-                "text": (
-                "Extrai os dados de um pedido para proposta de diagnóstico de engenharia. "
-                    "Separa os dados da empresa cliente dos dados de quem assina ou envia a mensagem; "
-                    "nunca uses automaticamente o email de assinatura como email da empresa cliente. "
-                    "Não inventes factos: usa null quando não houver evidência. Mantém o idioma "
-                    "original e assinala dados em falta. Texto do pedido:\n\n" + text[:50000]
-                ),
-            }],
-        }],
-        "text": {"format": {"type": "json_schema", "name": "oz_request_analysis", "strict": True,
-                              "schema": ANALYSIS_SCHEMA}},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-                json=payload,
-            )
-        response.raise_for_status()
-        data = response.json()
-        for output in data.get("output", []):
-            for item in output.get("content", []):
-                if item.get("type") == "output_text":
-                    return json.loads(item["text"]), None
-        return {}, "A OpenAI não devolveu uma análise estruturada."
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
-        return {}, "A análise OpenAI falhou; foram usados campos básicos."
 
 
 async def create_client(token: str, owner_id: str, fields: dict[str, Any]) -> str | None:
@@ -266,36 +151,11 @@ async def analyze_request(
     fields = {"client_name": client_name.strip(), "client_email": client_email.strip(),
               "project_name": project_name.strip(), "location": location.strip(),
               "deadline": deadline.strip()}
-    analysis, analysis_error = await analyze_with_openai(content)
-    result = fallback_analysis(content, fields)
-    parsed = parse_email_request(content)
-    mode = "RULES"
-    if analysis:
-        result.update({key: value for key, value in analysis.items() if value is not None})
-        mode = "OPENAI"
-    # Email labels are deterministic and must override ambiguous model guesses,
-    # particularly where the customer's address and sender's signature differ.
-    result.update({key: value for key, value in parsed.items() if value not in (None, "", [])})
-    if not parsed.get("client_email") and parsed.get("sender_email") == result.get("client_email"):
-        result["client_email"] = None
-    for key, value in fields.items():
-        if value:
-            result[key] = value
-    missing = list(result.get("missing_information") or [])
-    for key, label in [("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
-                       ("project_name", "Nome da obra"), ("location", "Localização")]:
-        if result.get(key):
-            missing = [item for item in missing if label.casefold() not in str(item).casefold()]
-        elif not any(label.casefold() in str(item).casefold() for item in missing):
-            missing.append(label)
-    result["missing_information"] = missing
-    if result.get("deadline"):
-        try:
-            date.fromisoformat(result["deadline"][:10])
-        except (TypeError, ValueError):
-            result["deadline"] = None
-
-    technical_diagnosis = await analyze_technical_diagnosis(content, result, user.token)
+    orchestrated = await orchestrate_request_analysis(content, fields, user.token)
+    result = orchestrated["fields"]
+    analysis_error = orchestrated["analysis_error"]
+    mode = orchestrated["analysis_mode"]
+    technical_diagnosis = orchestrated["technical_diagnosis"]
     client_id = await create_client(user.token, user.id, result)
     project_id = None
     project_name_value = result.get("project_name")
@@ -432,7 +292,8 @@ async def download_proposal_pdf(request_id: str, user: CurrentUser = Depends(cur
 async def update_request_fields(request_id: str, update: FieldsUpdate,
                                 user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
     allowed = {"client_name", "client_email", "project_name", "location", "construction_year",
-               "basement_count", "objective", "deadline", "categories", "constraints",
+               "basement_count", "building_area_m2", "storey_count", "objective", "deadline", "categories", "constraints",
+               "request_type", "problem_type", "problem_summary", "symptom_locations",
                "missing_information", "client_tax_id", "client_address", "client_phone",
                "client_contact_name", "client_contact_role", "client_contact_email",
                "source_subject", "sender_name", "sender_role", "sender_organization",
@@ -447,12 +308,19 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
     fields = {**(request_row.get("extracted_fields") or {}), **update.fields}
     title = fields.get("project_name") or fields.get("client_name") or request_row["title"]
     missing = list(fields.get("missing_information") or [])
-    for key, label in [("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
-                       ("project_name", "Nome da obra"), ("location", "Localização")]:
+    required_fields = [("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
+                       ("project_name", "Nome da obra"), ("location", "Localização")]
+    optional_fields = [("building_area_m2", "Área aproximada"), ("storey_count", "Número de pisos"),
+                       ("construction_year", "Ano de construção"), ("basement_count", "Número de caves"),
+                       ("symptom_locations", "Localização das anomalias")]
+    for key, label in required_fields:
         if fields.get(key):
             missing = [item for item in missing if label.casefold() not in str(item).casefold()]
         elif not any(label.casefold() in str(item).casefold() for item in missing):
             missing.append(label)
+    for key, label in optional_fields:
+        if fields.get(key):
+            missing = [item for item in missing if label.casefold() not in str(item).casefold()]
     fields["missing_information"] = missing
     deadline = fields.get("deadline") or None
     if deadline:
@@ -462,8 +330,9 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
             raise HTTPException(422, "O prazo tem de ser uma data válida.") from exc
 
     previous_fields = request_row.get("extracted_fields") or {}
-    technical_keys = {"objective", "categories", "constraints", "requested_services", "location",
-                      "construction_year", "basement_count"}
+    technical_keys = {"objective", "request_type", "problem_type", "problem_summary", "symptom_locations",
+                      "categories", "constraints", "requested_services", "location", "building_area_m2",
+                      "storey_count", "construction_year", "basement_count"}
     technical_changed = any(fields.get(key) != previous_fields.get(key) for key in technical_keys)
     analyses = await rest(user.token, "proposal_analysis", params={
         "request_id": f"eq.{request_id}", "select": "extracted", "limit": "1",
@@ -543,8 +412,12 @@ async def change_status(request_id: str, update: StatusChange,
         if not request_rows:
             raise HTTPException(404, "Pedido não encontrado.")
         fields = request_rows[0].get("extracted_fields") or {}
-        if fields.get("missing_information"):
-            raise HTTPException(409, "Preenche a informação em falta antes de aprovar.")
+        required_missing = [label for key, label in (
+            ("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
+            ("project_name", "Nome da obra"), ("location", "Localização"),
+        ) if not fields.get(key)]
+        if required_missing:
+            raise HTTPException(409, f"Preenche os dados obrigatórios antes de aprovar: {', '.join(required_missing)}.")
         proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
         if not proposals:
             raise HTTPException(409, "Gera uma proposta antes de a aprovar.")
