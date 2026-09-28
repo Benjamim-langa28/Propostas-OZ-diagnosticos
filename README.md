@@ -64,9 +64,15 @@ OPENAI_MODEL=gpt-4.1-mini
 RESEND_API_KEY=
 EMAIL_FROM=
 WEB_ORIGIN=http://localhost:3000
+COMPANY_NAME=OZ Diagnóstico e Engenharia
+COMPANY_ADDRESS=
+COMPANY_EMAIL=
+COMPANY_PHONE=
+PROPOSAL_SIGNATORY=
+PROPOSAL_PAYMENT_TERMS=
 ```
 
-As chaves OpenAI e Resend só são lidas pela API Python. Mantém os ficheiros `.env` locais e não os envies para GitHub. A API passa o token do utilizador ao Supabase para que a RLS continue a limitar cada operação.
+As chaves OpenAI e Resend só são lidas pela API Python. Os dados da empresa no fim do exemplo alimentam o cabeçalho e rodapé do PDF; `PROPOSAL_PAYMENT_TERMS` configura as condições comerciais fixas, e deixa a assinatura vazia até configurares o profissional responsável. Mantém os ficheiros `.env` locais e não os envies para GitHub. A API passa o token do utilizador ao Supabase para que a RLS continue a limitar cada operação.
 
 ## Executar localmente
 
@@ -100,6 +106,8 @@ Abre [http://localhost:3000](http://localhost:3000). A documentação interativa
 - Criação numerada de proposta, catálogo de serviços, quantidades, preços, IVA e totais.
 - Geração e transferência de PDF, versões imutáveis da proposta e estados de aprovação/envio.
 - Sugestões de serviços elétricos a partir do âmbito do email, com preço zero até validação técnica.
+- Mapeamento preliminar Python de patologias da base técnica para causas, ensaios e soluções codificados; quando a chave OpenAI está configurada, a seleção de candidatos é refinada por IA e limitada aos códigos existentes.
+- Geração de proposta PDF em seis secções, inspirada na estrutura do documento de referência: objeto, considerações prévias, condições técnicas e ensaios, mapeamento de patologias, honorários e condições comerciais.
 - Biblioteca de propostas: pesquisa de propostas geradas, carregamento de propostas antigas e consulta de referências semelhantes. Os ficheiros carregados ficam privados e não são partilhados entre utilizadores.
 - Envio manual pelo Resend após aprovação, com o PDF gerado anexado automaticamente.
 - Consulta da base técnica de patologias, causas, ensaios e soluções.
@@ -109,4 +117,7 @@ Abre [http://localhost:3000](http://localhost:3000). A documentação interativa
 - PDF digitalizado ainda requer OCR; o sistema informa quando não consegue extrair texto.
 - A primeira migração cria dados com isolamento RLS por utilizador. As propostas e clientes não são automaticamente partilhados entre contas distintas.
 - As referências de diagnóstico herdadas do sistema anterior precisam de validação de um engenheiro antes de uso técnico.
-- Os textos de validade, execução e condições comerciais ficam indicados para validação humana no documento impresso.
+- A percentagem de correspondência técnica mede aderência textual ao catálogo, não a probabilidade de uma patologia. Causas e soluções são hipóteses para confirmação pelo engenheiro.
+- A base instalada contém códigos de patologias estruturais e de edifícios, mas ainda não tem uma taxonomia elétrica codificada; pedidos elétricos não recebem códigos estruturais por aproximação.
+- Assinatura profissional e dados da empresa no PDF são configuráveis no `.env`; não é reproduzida a assinatura manuscrita do documento de referência.
+- Os textos de validade, execução, pagamento e exclusões ficam indicados para validação humana no documento final.

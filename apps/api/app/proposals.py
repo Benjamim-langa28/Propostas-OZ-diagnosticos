@@ -20,6 +20,7 @@ from app.email_intake import looks_like_email, parse_email_request
 from app.proposal_pdf import build_proposal_pdf
 from app.supabase_rest import rest
 from app.storage import signed_document_url, upload_document
+from app.technical_diagnosis import analyze_technical_diagnosis
 
 router = APIRouter(prefix="/api", tags=["proposals"])
 
@@ -94,6 +95,11 @@ class EmailRequest(BaseModel):
 
 class FieldsUpdate(BaseModel):
     fields: dict[str, Any]
+
+
+class ProposalTermsUpdate(BaseModel):
+    validity_days: int = Field(ge=1, le=365)
+    execution_period: str = Field(default="", max_length=500)
 
 
 class VisitCreate(BaseModel):
@@ -289,6 +295,7 @@ async def analyze_request(
         except (TypeError, ValueError):
             result["deadline"] = None
 
+    technical_diagnosis = await analyze_technical_diagnosis(content, result, user.token)
     client_id = await create_client(user.token, user.id, result)
     project_id = None
     project_name_value = result.get("project_name")
@@ -309,7 +316,8 @@ async def analyze_request(
     request_row = request_rows[0]
     analysis_rows = await rest(user.token, "proposal_analysis", method="POST", body={
         "owner_id": user.id, "request_id": request_row["id"], "categories": result.get("categories", []),
-        "extracted": result, "missing_information": result.get("missing_information", []),
+        "extracted": {**result, "technical_diagnosis": technical_diagnosis},
+        "missing_information": result.get("missing_information", []),
         "restrictions": result.get("constraints", []), "analysis_mode": mode,
     }, prefer="return=representation")
     if mqt_rows:
@@ -372,6 +380,26 @@ async def get_request(request_id: str, user: CurrentUser = Depends(current_user)
             "mqt_items": mqt_items}
 
 
+@router.post("/proposals/{request_id}/technical-diagnosis")
+async def refresh_technical_diagnosis(request_id: str,
+                                      user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "id,raw_text,extracted_fields", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    request_row = request_rows[0]
+    fields = request_row.get("extracted_fields") or {}
+    diagnosis = await analyze_technical_diagnosis(request_row.get("raw_text") or "", fields, user.token)
+    extracted = {**fields, "technical_diagnosis": diagnosis}
+    await rest(user.token, "proposal_analysis", method="PATCH",
+               params={"request_id": f"eq.{request_id}"},
+               body={"extracted": extracted, "categories": fields.get("categories", []),
+                     "missing_information": fields.get("missing_information", []),
+                     "restrictions": fields.get("constraints", [])}, prefer="return=minimal")
+    return diagnosis
+
+
 @router.get("/documents/{document_id}/download")
 async def download_document(document_id: str,
                            user: CurrentUser = Depends(current_user)) -> dict[str, str]:
@@ -384,13 +412,16 @@ async def download_document(document_id: str,
 
 @router.get("/proposals/{request_id}/pdf")
 async def download_proposal_pdf(request_id: str, user: CurrentUser = Depends(current_user)) -> Response:
-    request_rows = await rest(user.token, "proposal_requests", params={"id": f"eq.{request_id}", "limit": "1"})
-    proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    request_rows, proposals, analyses = await asyncio.gather(
+        rest(user.token, "proposal_requests", params={"id": f"eq.{request_id}", "limit": "1"}),
+        rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"}),
+        rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"}),
+    )
     if not request_rows or not proposals:
         raise HTTPException(404, "Gera uma proposta antes de transferir o PDF.")
     items = await rest(user.token, "proposal_items", params={"proposal_id": f"eq.{proposals[0]['id']}",
                                                                "order": "position.asc"})
-    pdf = build_proposal_pdf(request_rows[0], proposals[0], items)
+    pdf = build_proposal_pdf(request_rows[0], proposals[0], items, analyses[0] if analyses else None)
     safe_number = re.sub(r"[^A-Za-z0-9_-]", "-", proposals[0]["proposal_no"])
     return Response(content=pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="OZ_{safe_number}.pdf"',
@@ -430,6 +461,17 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
         except ValueError as exc:
             raise HTTPException(422, "O prazo tem de ser uma data válida.") from exc
 
+    previous_fields = request_row.get("extracted_fields") or {}
+    technical_keys = {"objective", "categories", "constraints", "requested_services", "location",
+                      "construction_year", "basement_count"}
+    technical_changed = any(fields.get(key) != previous_fields.get(key) for key in technical_keys)
+    analyses = await rest(user.token, "proposal_analysis", params={
+        "request_id": f"eq.{request_id}", "select": "extracted", "limit": "1",
+    })
+    saved_diagnosis = ((analyses[0].get("extracted") or {}).get("technical_diagnosis") if analyses else None)
+    technical_diagnosis = (await analyze_technical_diagnosis(request_row.get("raw_text") or "", fields, user.token)
+                           if technical_changed or not saved_diagnosis else saved_diagnosis)
+
     client_id = await create_client(user.token, user.id, fields) or request_row.get("client_id")
 
     project_id = request_row.get("project_id")
@@ -460,10 +502,33 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
         body=changes,
         prefer="return=representation")
     await rest(user.token, "proposal_analysis", method="PATCH", params={"request_id": f"eq.{request_id}"},
-        body={"extracted": fields, "categories": fields.get("categories", []),
+        body={"extracted": {**fields, "technical_diagnosis": technical_diagnosis},
+              "categories": fields.get("categories", []),
               "missing_information": fields.get("missing_information", []),
               "restrictions": fields.get("constraints", [])}, prefer="return=minimal")
     return request_rows[0]
+
+
+@router.patch("/proposals/{request_id}/terms")
+async def update_proposal_terms(request_id: str, update: ProposalTermsUpdate,
+                                 user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de alterar a proposta.")
+    proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    if not proposals:
+        raise HTTPException(409, "Gera a proposta antes de alterar as condições comerciais.")
+    rows = await rest(user.token, "proposals", method="PATCH",
+                      params={"id": f"eq.{proposals[0]['id']}", "select": "*"},
+                      body=update.model_dump(), prefer="return=representation")
+    if not rows:
+        raise HTTPException(404, "Proposta não encontrada.")
+    await mark_pricing(user.token, proposals[0]["id"])
+    return rows[0]
 
 
 @router.patch("/proposals/{request_id}/status")
@@ -521,6 +586,7 @@ async def generate_proposal(request_id: str,
     current_items = await rest(user.token, "proposal_items", params={
         "proposal_id": f"eq.{row['proposal_id']}", "select": "service_id,position",
     })
+    analyses = await rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"})
     if request_rows:
         extracted = request_rows[0].get("extracted_fields") or {}
         requested = " ".join(extracted.get("requested_services") or []).casefold()
@@ -532,6 +598,16 @@ async def generate_proposal(request_id: str,
             ("ELEC_REPORT", ("relatório", "relatorio", "recomendações", "recomendacoes")),
         )
         matched_ids = [service_id for service_id, words in service_matches if any(word in requested for word in words)]
+        technical = (analyses[0].get("extracted") or {}).get("technical_diagnosis") if analyses else {}
+        test_basis_by_service: dict[str, list[str]] = {}
+        for candidate in (technical or {}).get("candidates", []):
+            for test in candidate.get("tests", []):
+                service_id = test.get("service_id")
+                if service_id:
+                    test_basis_by_service.setdefault(str(service_id), []).append(
+                        f"{test.get('code')} — {test.get('name')}"
+                    )
+        matched_ids = list(dict.fromkeys([*matched_ids, *test_basis_by_service.keys()]))
         if matched_ids:
             services = await rest(user.token, "services", params={
                 "service_id": f"in.({','.join(matched_ids)})", "active": "eq.true", "select": "service_id,name,unit,technical_basis",
@@ -546,10 +622,14 @@ async def generate_proposal(request_id: str,
                 service = service_by_id.get(service_id)
                 if not service:
                     continue
+                technical_basis = service.get("technical_basis")
+                test_basis = "; ".join(test_basis_by_service.get(service_id, []))
+                if test_basis:
+                    technical_basis = "; ".join(value for value in (test_basis, technical_basis) if value)
                 new_items.append({
                     "owner_id": user.id, "proposal_id": row["proposal_id"], "service_id": service_id,
                     "name": service["name"], "unit": service["unit"], "quantity": 1,
-                    "unit_price": 0, "origin": "SUGGESTED", "technical_basis": service.get("technical_basis"),
+                    "unit_price": 0, "origin": "SUGGESTED", "technical_basis": technical_basis,
                     "position": next_position + len(new_items),
                 })
             if new_items:
@@ -730,7 +810,8 @@ async def send_proposal_email(request_id: str, payload: EmailRequest,
         f"<b>Total: {total * (1 + float(proposal['vat_rate']) / 100):.2f} €</b></p>{message_html}"
         "<p>Segue em anexo o documento PDF da proposta.</p>"
     )
-    pdf_bytes = build_proposal_pdf(request_row, proposal, items)
+    analyses = await rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    pdf_bytes = build_proposal_pdf(request_row, proposal, items, analyses[0] if analyses else None)
     safe_number = re.sub(r"[^A-Za-z0-9_-]", "-", proposal["proposal_no"])
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post("https://api.resend.com/emails",
