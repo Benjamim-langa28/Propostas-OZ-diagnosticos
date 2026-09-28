@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="pt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OZ Intelligent Proposal</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:wght@400;600&display=swap">
+<style>
+:root{--bg:#e9ece8;--card:#f7f8f5;--ink:#1c2a31;--mute:#5d6b70;--line:#c9d0cb;--acc:#25585a;--warn:#b7791f;--bad:#a63d2f;--ok:#3b7a4b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161d20;--card:#1f292d;--ink:#e6ebe8;--mute:#93a3a6;--line:#33434a;--acc:#6fb3b0;--warn:#e0a94a;--bad:#e27a6a;--ok:#7fc08f}}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 'IBM Plex Sans',system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:2px solid var(--ink);flex-wrap:wrap}
+header b{font-size:17px;letter-spacing:.2px}header span{color:var(--mute);font-size:13px}
+main{max-width:980px;margin:0 auto;padding:20px}
+h2{font:600 22px 'Source Serif 4',serif;margin:0 0 12px}h3{font-size:15px;margin:18px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:16px;margin-bottom:14px}
+button,select,input,textarea{font:inherit;color:inherit}
+button{background:var(--acc);color:#fff;border:0;padding:8px 14px;border-radius:3px;cursor:pointer;font-weight:500}
+button.g{background:transparent;color:var(--ink);border:1px solid var(--line)}button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--warn);outline-offset:2px}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:6px 8px;width:100%}
+textarea{min-height:190px;resize:vertical}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.grow{flex:1;min-width:150px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stats div{border-left:4px solid var(--acc);padding:4px 12px}.stats b{font-size:28px;display:block}
+.tag{font-size:11px;padding:1px 6px;border-radius:2px;border:1px solid currentColor;white-space:nowrap}
+.UNKNOWN,.REQUIRES_REVIEW{color:var(--bad)}.INFERRED,.SUGGESTED{color:var(--warn)}.EXTRACTED,.VALIDATED{color:var(--ok)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{font-size:12px;color:var(--mute);font-weight:500}
+td.n,th.n{text-align:right;white-space:nowrap}td input[type=number]{width:74px;text-align:right}
+.li{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.alert{border-left:4px solid var(--bad);padding:6px 12px;background:var(--card);margin-bottom:10px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:700px){.two{grid-template-columns:1fr}}
+.paper{background:#fff;color:#1a1a1a;font:15px/1.6 'Source Serif 4',Georgia,serif;padding:44px 48px;border:1px solid var(--line);max-width:800px;margin:0 auto}
+.paper h4{font:600 15px 'Source Serif 4',serif;margin:20px 0 4px}.paper table td,.paper table th{border-color:#ccc}
+.paper [contenteditable]{outline:1px dashed #b7791f55;min-height:1.4em}.foot{margin-top:30px;border-top:1px solid #999;padding-top:8px;font-size:12px;color:#555}
+@media print{header,.noprint{display:none!important}body{background:#fff}.paper{border:0;padding:0}}
+.chip{font-size:12px;color:var(--acc);text-decoration:none;border-bottom:1px dotted var(--acc);white-space:nowrap}td .chip{margin-right:2px;display:inline-block}
+</style></head><body>
+<header><b>OZ Intelligent Proposal</b><span>A IA sugere · o engenheiro valida · a decisão é humana</span><span id="nav"></span></header>
+<main id="app"></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.6/purify.min.js"></script>
+<script>
+const KB={
+TIP:`ED-01|Edifício antigo de alvenaria de pedra|Humidade, paredes de várias folhas, pavimentos de madeira, sismo
+ED-02|Edifício pombalino (gaiola, pós-1755)|Madeira degradada, alterações à gaiola, ligações, sismo
+ED-03|Edifício "gaioleiro" (finais séc. XIX e início XX)|Paredes esbeltas, madeira, desligamento paredes–pavimentos
+ED-04|Betão armado "de placa" (c. 1930–1960)|Betão pobre, recobrimentos baixos, carbonatação
+ED-05|Betão armado 1960–1980|Carbonatação, varandas e consolas, cloretos em zona costeira
+ED-06|Betão armado pós-RSA/REBAP (1983+)|Falhas de execução, infiltrações, juntas
+ED-07|Betão armado recente (Eurocódigos, c. 2010+)|Falhas de execução, humidade em caves, obras paradas
+ED-08|Estrutura mista (alvenaria + betão)|Rigidez incompatível, ampliações não documentadas
+ED-09|Estrutura metálica|Corrosão, ligações, pintura
+ED-10|Estrutura de madeira|Fungos, insetos, humidade
+ED-11|Pré-fabricado / pré-esforçado +|Ligações, corrosão de cabos
+US-01|Uso residencial|
+US-02|Serviços / escritórios|
+US-03|Comercial|
+US-04|Escolar|Em funcionamento: exige faseamento
+US-05|Hospitalar|Condicionantes de acesso e horário
+US-06|Industrial / fábrica|
+US-07|Armazém|
+US-08|Parque de estacionamento / caves|
+US-09|Património classificado / de interesse|
+US-10|Edifício em construção parado +|Ex.: caves submersas
+OE-01|Pontes e viadutos|
+OE-02|Muros de suporte|
+OE-03|Reservatórios e depósitos|
+OE-04|Torres e chaminés|
+OE-05|Coberturas|
+OE-06|Pavimentos industriais ou rodoviários|
+OE-07|Infraestruturas industriais|
+OE-08|Silos +|
+OE-09|Túneis e estruturas enterradas +|
+OE-10|Cais e estruturas marítimas +|`,
+ELE:`01|Pilar
+02|Viga
+03|Laje
+04|Fundações
+05|Parede / alvenaria
+06|Estrutura metálica
+07|Cobertura
+08|Pavimento de madeira +
+09|Escadas +
+10|Muro de suporte
+11|Fachada / revestimento
+12|Juntas
+13|Varandas e consolas +
+14|Paredes de betão e núcleos +
+15|Arcos e abóbadas +
+16|Caves / paredes enterradas +
+17|Guardas e elementos não estruturais +
+18|Cabos e ancoragens de pré-esforço +`,
+CAU:`01|Carbonatação
+02|Cloretos
+03|Humidade / infiltração
+04|Recobrimento insuficiente
+05|Betão de baixa qualidade / excesso de água
+06|Má compactação / falha de execução
+07|Retração
+08|Variações térmicas
+09|Sobrecarga
+10|Assentamento / recalque
+11|Movimentação do terreno / nível freático
+12|Ataque químico (sulfatos, ácidos)
+13|Reação álcali-sílica +
+14|Gelo-degelo +
+15|Fogo
+16|Impacto
+17|Falta de manutenção
+18|Alteração de utilização / intervenção indevida
+19|Erro de projeto ou conceção +
+20|Sismo +
+21|Fadiga
+22|Ataque biológico (fungos, insetos) +
+23|Corrosão galvânica +
+24|Drenagem ou impermeabilização deficiente
+25|Envelhecimento natural +
+26|Vibrações +
+27|Obras vizinhas / escavações +
+28|Correntes vagabundas +`,
+ENS:`01|Inspeção visual (inclui martelo de inspeção)|Inspeção
+02|Levantamento dimensional / geométrico|Inspeção
+03|Mapeamento de fissuras|Inspeção
+04|Medição da abertura de fissuras|Inspeção
+05|Monitorização com fissurómetro|Monitorização
+06|Nivelamento e estação total|Inspeção
+07|Nuvem de pontos / laser scanner +|Inspeção
+08|Inspeção por drone|Inspeção
+10|Esclerometria (NP EN 12504-2)|Betão
+11|Ultrassons (NP EN 12504-4)|Betão
+12|Pacometria / deteção de armaduras e recobrimento|Betão
+13|Georradar +|Betão
+14|Potencial de corrosão, half-cell (ASTM C876) +|Betão
+15|Resistividade elétrica +|Betão
+16|Profundidade de carbonatação (fenolftaleína)|Betão
+17|Teor de cloretos por perfis de profundidade|Betão
+18|Carotes e resistência à compressão (NP EN 12504-1, NP EN 13791)|Betão
+19|Arrancamento / pull-off +|Betão
+20|Ensaios de tração e análise de armaduras +|Betão
+21|Petrografia / diagnóstico de RAS +|Betão
+22|Absorção de água +|Betão
+23|Prova de carga +|Estrutura
+30|Medição de humidade|Humidade
+31|Termografia|Humidade
+40|Macacos planos, simples e duplos|Alvenaria
+41|Ensaios sónicos / ultrassons em alvenaria +|Alvenaria
+42|Endoscopia +|Alvenaria
+43|Sondagens de inspeção e janelas de observação +|Alvenaria
+50|Resistografia|Madeira
+51|Ultrassons e humidade em madeira +|Madeira
+60|Medição de espessura por ultrassons +|Metal
+61|Líquidos penetrantes / partículas magnéticas / soldaduras +|Metal
+70|Prospeção geotécnica (SPT, CPT, sondagens) +|Geotecnia
+71|Poços de reconhecimento de fundações +|Geotecnia
+72|Piezómetros +|Geotecnia
+80|Extensómetros / deformímetros +|Monitorização
+81|Clinómetros / inclinómetros +|Monitorização
+82|Sensores de humidade e temperatura +|Monitorização
+83|Monitorização de vibrações +|Monitorização`,
+SOL:`01|Selagem
+02|Injeção de resina
+03|Selante flexível
+04|Tratamento superficial / revestimento protetor
+05|Reparação do betão (remover, limpar armaduras, recompor)
+06|Proteção superficial / impregnação +
+07|Reforço por encamisamento
+08|Reforço com compósitos (fibra de carbono ou vidro)
+09|Reforço com chapas ou perfis metálicos
+10|Substituição ou complemento de armadura
+11|Proteção catódica +
+12|Extração de cloretos / realcalinização +
+13|Impermeabilização
+14|Reparação de juntas
+15|Melhoria de drenagem
+16|Corrigir a origem da infiltração
+17|Reforço ou recalçamento de fundações +
+18|Injeção de consolidação em alvenarias +
+19|Cosedura, tirantes e atirantamento +
+20|Reparação de alvenaria (refechamento, substituição)
+21|Tratamento anticorrosivo e pintura (metal)
+22|Substituição de elementos ou ligações
+23|Reparação de soldaduras
+24|Tratamento e reforço de madeira +
+25|Redução de cargas / escoramento provisório
+26|Monitorização
+27|Substituição do elemento
+28|Investigação adicional
+29|Isolar a área / medidas de segurança imediatas
+30|Manutenção e limpeza`,
+SEV:`1|Baixa|Superficial, sem comprometimento estrutural imediato|Manutenção e acompanhamento
+2|Média|Pode evoluir e afetar a durabilidade|Reparação programada e monitorização
+3|Alta|Relevante em elemento estrutural|Avaliação detalhada e intervenção prioritária
+4|Crítica|Sinais de possível instabilidade ou risco significativo|Proteger/isolar a área e avaliar urgentemente`,
+PAT:`BA-001|Fissura vertical|07,10|03,04,05|1-2|01,02,26
+BA-002|Fissura horizontal|01,02,09|03,12,16|2|02,05
+BA-003|Fissura diagonal|09,10|03,05,06|3|02,08,26
+BA-004|Fissura em mapa|05,07,13|03,21|1-2|04
+BA-005|Rachadura profunda / passante|09,10,11|03,05,06,11|3-4|25,26,08
+BA-006|Fissura de flexão (viga/laje) +|09,19|03,06,23|2-3|02,08,09
+BA-007|Fissura de corte (viga)|09,19|03,12,23|3-4|08,09,25
+BA-008|Fissura longitudinal ao longo da armadura|01,02|12,14,16,17|2-3|05
+BA-009|Fissura de retração ou assentamento plástico +|06,07|03,04|1|01,04
+BA-010|Fissura térmica +|08|03,05|1-2|03
+BA-011|Fissuração por RAS +|13|21,10|2-3|04,26
+BA-012|Punçoamento / torção em laje-pilar +|09,19|03,06,23|3-4|08,09,25,29
+BA-020|Desagregação|03,05,06,12|10,11,18|2-3|05,07
+BA-021|Destacamento do betão|01,02,15|01,12,16,17|3|05
+BA-022|Delaminação +|01,02|01,11|2|05
+BA-023|Esmagamento (pilar)|05,09|10,11,18|4|25,29,07,08,09
+BA-024|Bicheiras / ninhos de brita +|06|11,18|1-2|05
+BA-025|Segregação +|05,06|11,18|2|05
+BA-026|Perda de secção do betão|01,02,12|02,12|3|05,07
+BA-030|Armaduras expostas|04,01,02|01,12,16|2-3|05
+BA-031|Corrosão por carbonatação|01,03,04|12,14,16|2-3|05,06
+BA-032|Corrosão por cloretos|02|14,17|3|05,11,12
+BA-033|Redução da secção da armadura|01,02|01,20|3-4|10,08
+BA-034|Corrosão por correntes vagabundas +|28|14,15|3|11
+BA-035|Manchas de ferrugem / expansão do betão|01,02|01,12|2|05
+BA-040|Eflorescências|03|30|1|13,16
+BA-041|Lixiviação +|03,12|22|2|04,13
+BA-042|Ataque por sulfatos ou ácidos +|12|18,21|2-3|05,07
+BA-043|Gelo-degelo +|14|01,22|1-2|04
+BA-044|Carbonatação atingindo a armadura|01,04|12,16|2|05,06,12
+BA-045|Contaminação por cloretos|02|17,14|3|05,11,12
+BA-050|Deformação / flecha excessiva|09,07|06,23|2-3|25,08,09
+BA-051|Desaprumo / inclinação de pilares|10,20|06,81|3|25,26
+BA-052|Danos por fogo +|15|10,11,18,20|3|05,07,08
+BA-053|Danos por impacto|16|01,11|2-3|05,08
+BA-054|Betão com resistência inferior à de projeto +|05,19|10,11,18|3|07,08
+BA-055|Armadura insuficiente ou mal posicionada +|06,19|12,13|3|07,08,09
+BA-056|Recobrimento insuficiente|04,06|12|2|05,06
+BA-057|Junta de betonagem deficiente +|06|11,43|2|02
+BA-058|Degradação de varandas e consolas +|01,02,03|01,12,16,17|3-4|29,05,08
+BA-059|Degradação de juntas de dilatação +|08,17|01|1-2|14
+BA-060|Betão exposto a água / submersão prolongada +|03,11,24|12,16,17,18|2-3|05,13,15
+BA-061|Sobrecarga|09,18|06,23|3|25,08,09
+PE-001|Corrosão de cabos / bainhas +|02,03|13,42|4|25,29,28
+PE-002|Perda de pré-esforço +|25,09|06,80|3-4|28,08
+PE-003|Injeção deficiente de bainhas +|06|13,42|3|28
+PE-004|Rotura de fios ou ancoragens +|02,21|13,42|4|25,29
+AL-001|Fissuras verticais em paredes|07,08,10|03,05|1-2|01,20,26
+AL-002|Fissuras diagonais / em cunhais|10,20|03,05,06|3|19,26
+AL-003|Fissuras horizontais / esmagamento|09|03,40|3|19,25
+AL-004|Fissuras em torno de vãos +|19,18|03|2|20,19
+AL-005|Desaprumo / encurvadura de parede|09,10,20|06|3-4|19,25,29
+AL-006|Desligamento entre paredes ou parede–pavimento +|20,18|01,03|3|19
+AL-007|Perda de argamassa das juntas +|03,25|01|2|20
+AL-008|Desagregação da pedra ou do tijolo +|03,12|01,41|2|20,04
+AL-009|Destacamento de revestimentos (reboco, azulejo)|03,08|01,31|2|20,04
+AL-010|Descolamento / desalinhamento de revestimento pétreo +|08,03,10|03,05,06|2-3|25,20
+AL-011|Vazios / heterogeneidade em paredes de pedra +|25|40,41,42,43|2-3|18
+AL-012|Degradação de arcos e abóbadas +|09,10|06,42|3|19,18,25
+AL-013|Deformações de paredes|09,10|06|2-3|26,19
+AL-014|Remoção ou alteração indevida de paredes resistentes +|18|01,43|3-4|25,29,22
+FU-001|Assentamento uniforme|10|06,70|1-2|26
+FU-002|Recalque diferencial|10,11|05,06,70,71|3|17,26
+FU-003|Rotação / inclinação da estrutura|10,11|06,81|3-4|17,25
+FU-004|Desnivelamento de pavimentos|10|06|2|26
+FU-005|Movimentação do terreno (deslizamento, argilas expansivas) +|11|70,81|3|17,15,26
+FU-006|Variação do nível freático / inundação de caves +|11,24|72|2-3|15,13
+FU-007|Subescavação / erosão +|11,27|71,70|3|17
+FU-008|Fundações insuficientes ou degradadas +|19,25|71,70|3|17,07
+FU-009|Danos por obras vizinhas +|27,26|05,80,83|2-3|26
+HU-001|Infiltração em coberturas e terraços|03,24|30,31|2|13,16
+HU-002|Infiltração em fachadas e juntas|03,24|30,31|2|14,13
+HU-003|Infiltração de casas de banho e tubagens|03|30,31|2|16
+HU-004|Infiltração em caves e paredes enterradas +|03,11,24|30|2-3|13,15
+HU-005|Perda de estanquidade em reservatórios|03,07|30|3|13,02
+HU-006|Condensações e pontes térmicas +|08|31|1|04
+HU-007|Bolores|03|30|1|16,30
+HU-008|Drenagem deficiente|24|01|2|15
+HU-009|Humidade ascensional +|03,11|30,31|2|13,15
+HU-010|Cristalização de sais +|03|30|2|04,20
+ME-001|Corrosão generalizada|03,17|01,60|2-3|21
+ME-002|Corrosão localizada (picadas, frestas) +|03,23|01,60|2-3|21,22
+ME-003|Perda de espessura|03,17|60|3|22,09
+ME-004|Deformação|09|06|2-3|25,09,22
+ME-005|Encurvadura local ou global +|09|06|3-4|25,29,09
+ME-006|Defeitos e fissuras em soldaduras|21,06|61|3|23
+ME-007|Parafusos soltos, corroídos ou em falta|17,03|01|2-3|22
+ME-008|Ligações danificadas|09,21|01,61|3|22
+ME-009|Falha da pintura de proteção|17|01|1-2|21
+ME-010|Fadiga e fissuras|21|61|3-4|22,23
+ME-011|Danos por fogo +|15|01,60|3|22,09
+MA-001|Podridão fúngica +|22,03|50,51|3|24
+MA-002|Ataque de insetos de ciclo larvar (carunchos) +|22|50,01|2-3|24
+MA-003|Ataque de térmitas +|22|50,01|3|24
+MA-004|Apodrecimento de topos de vigas embebidos +|22,03|50|3|24,22
+MA-005|Perda de secção da madeira +|22,25|50|3|24,09
+MA-006|Flecha excessiva em pavimentos +|09,25|06,50|2-3|24,25
+MA-007|Fendas e empenos +|08,25|01|1-2|24
+MA-008|Ligações deficientes ou desligadas +|20,25|01|3|22,19
+MA-009|Elementos removidos ou alterados na gaiola +|18|01,43|3-4|25,22
+OU-001|Deformação da estrutura de cobertura|09,03|06|2-3|25,22
+OU-002|Degradação de pavimentos industriais ou rodoviários|09,26|01,11|2|05,30
+OU-003|Muro de suporte: tombamento, deslizamento, drenagem +|10,11,24|06,81|3|15,17,26
+OU-004|Pontes: degradação de apoios, juntas ou tabuleiro +|17,21,02|01,14,17|2-4|05,14,26
+OU-005|Torres e chaminés: inclinação e fissuras +|08,10,20|06,81,03|3|26,07
+OU-006|Alteração de utilização / sobrecarga|18,09|06,23|3|25,08
+OU-007|Intervenções não documentadas|18|01,43|2-4|28
+OU-008|Danos sísmicos +|20|03,06|3-4|19,08,29
+OU-009|Falta de manutenção / envelhecimento|17,25|01|1-2|30
+OU-010|Vibrações +|26|83|2|26`,
+SRV:`01|Visita técnica preliminar|Serviço
+02|Levantamento dimensional|Serviço
+03|Inspeção visual|m²/serviço
+04|Levantamento fotográfico|Serviço
+05|Mapeamento de fissuras|m/m²
+06|Levantamento de desagregação|m²
+07|Ensaio de esclerómetro|Ponto
+08|Ensaio ultrassónico|Ponto
+09|Deteção de armaduras|Ponto
+10|Medição de humidade|Ponto
+11|Termografia|Serviço
+12|Monitorização de fissuras|Ponto/mês
+13|Ensaios laboratoriais|Ensaio
+14|Análise técnica|Serviço
+15|Relatório técnico|Serviço
+16|Deslocação|Serviço/km
+17|Equipamentos especiais|Dia
+18|Trabalho em altura|Dia
+19|Acompanhamento de reparação|Dia
+20|Prova de carga +|Serviço
+21|Prospeção geotécnica +|Serviço
+22|Projeto de reparação/reforço +|Serviço
+23|Nota técnica +|Serviço
+24|Caderno de encargos +|Serviço
+25|Parecer / avaliação sísmica +|Serviço
+26|Nuvem de pontos / laser scanner +|Serviço
+27|Desenhos CAD +|Serviço
+28|Verba fixa de mobilização +|Serviço
+29|Fiscalização de obra +|Dia`,
+INF:`01|Nome da empresa / cliente
+02|Localização
+03|Tipo de estrutura
+04|Área aproximada
+05|Número de pisos
+06|Idade da estrutura
+07|Plantas
+08|Projeto estrutural
+09|Problemas identificados
+10|Fotografias existentes
+11|Histórico de reparações
+12|Motivo do diagnóstico
+13|Prazo pretendido
+14|Necessidade de relatório
+15|Necessidade de ensaios
+16|Necessidade de reparação
+17|Necessidade de monitorização
+18|Acesso ao local e horários +
+19|Estudo geotécnico +
+20|Ocupação do edifício / condicionantes +
+21|Licenças e autorizações +
+22|Relatórios anteriores +
+23|Histórico de infiltrações e acidentes +
+24|Contacto do dono de obra +`,
+REL:`01|Capa|Cliente, local, data, empresa
+02|Objetivo|Motivo da inspeção
+03|Caracterização da estrutura|Tipo, dimensões, idade, materiais, utilização
+04|Metodologia|Inspeção, medições, ensaios, equipamentos
+05|Patologias encontradas|Fichas P-001…: localização, fotografia, dimensão, descrição, causa, severidade
+06|Resultados dos ensaios|Tabelas e gráficos
+07|Diagnóstico|Interpretação técnica
+08|Recomendações|Reparação, reforço, impermeabilização, monitorização, investigação adicional
+09|Conclusão|Estado geral da estrutura
+10|Anexo fotográfico +|Fotografias numeradas
+11|Desenhos CAD e mapeamento em planta +|Localização das patologias e dos ensaios`,
+EQP:`D|Diagnóstico|Esclerómetro, ultrassom, pacómetro, detetor de armaduras, medidor de humidade, câmara termográfica, fissurómetros, equipamento de corrosão, georradar +
+M|Medição|Trena, laser, paquímetro, régua de fissuras, nível, nível laser, estação total, GPS
+C|Documentação|Câmara, drone, tablet, computador, impressora, CAD, software de imagem e de relatórios
+A|Acesso|Escadas, andaimes, plataformas elevatórias, acesso por cordas (só profissionais habilitados)`,
+MAT:`B|Reparação de betão|Argamassa de reparação, microbetão, grout, resina epóxi, selantes, primários, produtos de cura
+A|Armaduras|Passivadores, anticorrosivos, barras de aço, conectores, ancoragens
+I|Impermeabilização|Membranas, argamassas impermeabilizantes, selantes, primários, revestimentos protetores
+R|Reforço|Fibra de carbono ou de vidro, chapas e perfis de aço, barras adicionais, ancoragens, resinas estruturais`,
+OUT:`PKG-1|Pacote 1 — Inspeção básica|Visita, inspeção visual, registo fotográfico, levantamento de patologias, mapeamento, relatório básico
+PKG-2|Pacote 2 — Diagnóstico técnico|Pacote 1 + esclerómetro, pacómetro, medição de fissuras e humidade, análise técnica, relatório detalhado
+PKG-3|Pacote 3 — Diagnóstico completo|Inspeção detalhada, levantamento dimensional, ensaios não destrutivos e laboratoriais, monitorização, avaliação estrutural, diagnóstico das causas, recomendações de reparação e reforço, relatório completo
+HSE-1|EPI|Capacete, botas, colete, óculos, luvas, proteção auricular, máscara/respirador, arnês para altura
+HSE-2|Antes de iniciar|Avaliação de risco, isolar a área, verificar acessos, risco de queda de materiais, equipamentos, procedimento de emergência
+HSE-3|Condicionantes de execução +|Faseamento, coordenação com a direção do edifício, horário restrito (escolas, hospitais)
+NRM-1|Projeto e avaliação +|NP EN 1990 a 1998 (incl. EN 1998-3 avaliação sísmica), ISO 13822 — confirmar edição em vigor
+NRM-2|Betão +|NP EN 206, NP EN 1504, NP EN 12390; classes de exposição XC, XD, XS, XF, XA
+NRM-3|Ensaios +|NP EN 12504-1/-2/-4, NP EN 13791, EN 14630, EN 14629, EN 1542, ASTM C876
+NRM-4|Regulamentos históricos +|RSA/REBAP (1983), RGEU, RJUE
+SEC-1|Estado de conservação +|Escala 1 (péssimo) a 5 (excelente) do método de avaliação de imóveis — confirmar legislação em vigor
+FIC-1|Ficha de patologia|Código P-001, patologia PAT, elemento ELE, localização, dimensão, profundidade, armadura exposta, corrosão, fotografia IMG, causa CAU, severidade SEV, ensaio ENS, recomendação SOL, origem do dado`};
+const KT={TIP:'Tipos de construção',ELE:'Elementos',PAT:'Patologias',CAU:'Causas',ENS:'Ensaios',SOL:'Soluções',SEV:'Severidade',SRV:'Serviços',INF:'Informação ao cliente',REL:'Relatório',EQP:'Equipamentos',MAT:'Materiais',OUT:'Pacotes, HSE e normas'};
+const KH={PAT:['Código','Patologia','Causas','Ensaios','Severidade','Soluções'],TIP:['Código','Tipo','Notas'],ENS:['Código','Ensaio','Grupo'],SRV:['Código','Serviço','Unidade'],REL:['Código','Secção','Conteúdo'],EQP:['Código','Grupo','Itens'],MAT:['Código','Grupo','Itens'],OUT:['Código','Título','Conteúdo'],SEV:['Código','Nível','Significado','Ação']};
+const KG={BA:'Betão armado',PE:'Pré-esforçado',AL:'Alvenaria',FU:'Fundações e terreno',HU:'Água e humidade',ME:'Estruturas metálicas',MA:'Madeira',OU:'Outros e transversais'};
+const SVL=['','Baixa','Média','Alta','Crítica'],KD={},KR={};
+Object.keys(KB).forEach(k=>{KR[k]=KB[k].trim().split('\n').map(l=>{const f=l.split('|');f[0]=k+'-'+f[0];return f});KR[k].forEach(f=>KD[f[0]]=f[1])});
+const kb={t:'PAT',q:'',g:''};
+const kchip=(k,s)=>s.split(',').map(n=>{const c=k+'-'+n.trim();return`<a href="#" class="chip" title="${esc(KD[c]||'')}" onclick="kbGo('${c}');return false">${c}</a>`}).join(' ');
+const kname=n=>esc(n.replace(/ \+$/,''))+(/ \+$/.test(n)?' <span class="tag" title="Não consta do manual base">+</span>':'');
+function kbGo(c){kb.t=c.slice(0,3);kb.q=c;kb.g='';go('kb')}
+function kbExp(){dl('oz_base_conhecimento.json',new Blob([JSON.stringify(KR,null,1)],{type:'application/json'}))}
+function kbV(){
+ const tot=Object.values(KR).reduce((s,r)=>s+r.length,0);
+ return`<h2>Base de conhecimento</h2><p style="color:var(--mute)">${tot} registos. Os códigos são clicáveis; <span class="tag">+</span> indica o que não consta do manual base.</p>
+ <div class="row" style="margin-bottom:10px">${Object.keys(KT).map(k=>`<button class="${k===kb.t?'':'g'}" onclick="kb.t='${k}';kb.q='';kb.g='';render()">${KT[k]} (${KR[k].length})</button>`).join('')}</div>
+ <div class="row" style="margin-bottom:10px"><input class="grow" aria-label="Pesquisar" placeholder="Pesquisar código ou texto…" value="${esc(kb.q)}" oninput="kb.q=this.value;kbList()">${kb.t==='PAT'?`<select style="width:auto" aria-label="Material" onchange="kb.g=this.value;kbList()"><option value="">Todos os materiais</option>${Object.entries(KG).map(([k,v])=>`<option value="${k}" ${kb.g===k?'selected':''}>${v}</option>`).join('')}</select>`:''}<button class="g" onclick="kbExp()">Exportar JSON</button></div><div id="kbl"></div>`;
+}
+const PR=[[/fissur/i,'BA-001,BA-003,BA-005,AL-001,AL-002'],[/rachadura|grandes dimens/i,'BA-005,AL-002'],[/corros|ferrugem/i,'BA-031,BA-035,ME-001'],[/armadura/i,'BA-030,BA-033'],[/desagrega/i,'BA-020'],
+[/destac|revestimento|pétreo/i,'BA-021,AL-009,AL-010'],[/humidade|infiltra/i,'HU-001,HU-002,HU-003,HU-004'],[/submers|inundad|nível freático/i,'BA-060,FU-006,HU-004'],[/eflorescên/i,'BA-040'],
+[/deform|flecha|desalinh/i,'BA-050,AL-013'],[/assentamento|recalque|desnivel/i,'FU-001,FU-002,FU-004'],[/fundaç/i,'FU-002,FU-008'],[/madeira|carunch|térmit|podrid/i,'MA-001,MA-002,MA-004,MA-006'],
+[/metálic|estrutura de aço/i,'ME-001,ME-004'],[/carbonata/i,'BA-044,BA-031'],[/cloret/i,'BA-032,BA-045'],[/sismo/i,'OU-008,AL-002'],[/incêndio|fogo/i,'BA-052,ME-011'],
+[/obras vizinh|envolvente/i,'FU-009'],[/varanda|consola/i,'BA-058'],[/alvenaria|pedra/i,'AL-001,AL-002,AL-011,AL-007']];
+function suggest(t){const sc={};PR.forEach(([re,cs])=>{if(re.test(t))cs.split(',').forEach(c=>sc['PAT-'+c]=(sc['PAT-'+c]||0)+1)});return Object.entries(sc).sort((a,b)=>b[1]-a[1]).slice(0,12).map(x=>x[0])}
+const pf=c=>KR.PAT.find(r=>r[0]===c);
+const sevTag=s=>{const d=s.split('-').map(Number),m=Math.max(...d);return`<span class="tag ${m>=3?'REQUIRES_REVIEW':m===2?'SUGGESTED':'VALIDATED'}">${d.map(x=>SVL[x]).join('–')}</span>`};
+const ensOf=p=>[...new Set((p.pats||[]).filter(x=>x.on).flatMap(x=>pf(x.c)[3].split(',')))].filter(n=>!['01','03','04'].includes(n));
+function patCard(p){p.pats=p.pats||[];const en=ensOf(p);
+ return`<div class="card"><h3 style="margin-top:0">Patologias prováveis <span class="tag SUGGESTED">SUGGESTED</span></h3><p style="color:var(--mute);margin:0 0 8px">Sugeridas a partir do texto do pedido. Marque as que quer investigar.</p>
+ ${p.pats.map((x,i)=>{const f=pf(x.c);return`<label style="display:flex;gap:8px;align-items:baseline;padding:3px 0;flex-wrap:wrap"><input type="checkbox" style="width:auto" ${x.on?'checked':''} onchange="patTog(${i})"><span style="color:var(--mute);font-size:12px">${f[0]}</span><span>${kname(f[1])}</span>${sevTag(f[4])}${x.m?'<span class="tag VALIDATED">manual</span>':''}</label>`}).join('')||'<p>Não foram encontrados sintomas conhecidos no texto. Adicione patologias manualmente.</p>'}
+ <div class="row" style="margin-top:10px"><select style="width:auto;max-width:100%" aria-label="Adicionar patologia" onchange="patAdd(this.value)"><option value="">+ Adicionar patologia…</option>${KR.PAT.filter(f=>!p.pats.some(x=>x.c===f[0])).map(f=>`<option value="${f[0]}">${f[0].slice(4)} — ${esc(f[1].replace(/ \+$/,''))}</option>`).join('')}</select>
+ <button ${en.length?'':'disabled'} onclick="patScope()">Adicionar ${en.length} ensaio(s) ao âmbito</button></div>
+ ${en.length?`<p style="color:var(--mute);margin:8px 0 0">Ensaios associados: ${en.map(e=>esc(KD['ENS-'+e].replace(/ \+$/,''))).join('; ')}</p>`:''}</div>`}
+function patTog(i){const p=cur();p.pats[i].on=!p.pats[i].on;save();render()}
+function patAdd(c){if(!c)return;const p=cur();p.pats.push({c,on:true,m:true});lg(p,'Patologia '+c+' adicionada manualmente');save();render()}
+function patScope(){const p=cur(),EM={'05':'FISS_M1','12':'PACO','16':'CARB','17':'CLOR','18':'CAROTE','40':'MACACO','50':'RESIST'};let n=0;
+ ensOf(p).forEach(e=>{const id=EM[e]||'ENS-'+e;if(p.items.some(i=>i.id===id))return;const s=SV[EM[e]];
+  p.items.push({id,name:s?s[1]:KD['ENS-'+e].replace(/ \+$/,''),unit:s?s[2]:'un',price:s?s[3]:0,qty:1,sq:1,opt:true,on:false,grp:'',basis:'ENS-'+e+' — sugerido a partir das patologias',o:s&&s[3]?'SUGGESTED':'REQUIRES_REVIEW'});lg(p,'ENS-'+e+' adicionado ao âmbito (opcional)');n++});
+ save();alert(n?n+' ensaio(s) adicionados como opcionais e desativados, com quantidade 1. Defina quantidades e preços no âmbito.':'Todos os ensaios associados já estão no âmbito.');go('rev')}
+function kbList(){
+ const t=kb.t,q=kb.q.toLowerCase(),rows=KR[t].filter(f=>(!q||f.join(' ').toLowerCase().includes(q))&&(t!=='PAT'||!kb.g||f[0].startsWith('PAT-'+kb.g))),H=KH[t]||['Código','Descrição'];
+ const cell=(f,i)=>{if(t==='PAT'){if(i===2)return kchip('CAU',f[2]);if(i===3)return kchip('ENS',f[3]);if(i===5)return kchip('SOL',f[5]);
+   if(i===4){const d=f[4].split('-').map(Number);return`<span class="tag ${Math.max(...d)>=3?'REQUIRES_REVIEW':Math.max(...d)===2?'SUGGESTED':'VALIDATED'}">${d.map(x=>SVL[x]).join('–')}</span>`}}
+  return i===1?kname(f[1]):esc(f[i]||'')};
+ let rel='';const ix={CAU:2,ENS:3,SOL:5}[t];
+ if(rows.length===1&&ix&&kb.q===rows[0][0]){const n=rows[0][0].slice(4),r=KR.PAT.filter(f=>f[ix].split(',').includes(n));rel=`<div class="card"><b>Patologias relacionadas (${r.length})</b><div style="margin-top:6px">${r.map(f=>`<div><a href="#" class="chip" onclick="kbGo('${f[0]}');return false">${f[0]}</a> ${kname(f[1])}</div>`).join('')||'—'}</div></div>`}
+ $('kbl').innerHTML=`<div class="card" style="overflow-x:auto"><div style="color:var(--mute);margin-bottom:6px">${rows.length} de ${KR[t].length}</div><table><tr>${H.map(h=>`<th>${h}</th>`).join('')}</tr>${rows.map(f=>`<tr>${H.map((h,i)=>`<td>${cell(f,i)}</td>`).join('')}</tr>`).join('')||'<tr><td>Nada encontrado. Experimente outro termo.</td></tr>'}</table></div>${rel}`;
+}
+</script>
+<script>
+// URL do projeto e chave publicável Supabase. Nunca usar service_role no browser.
+const SB_URL="https://jvmtzprcghzixqrakefm.supabase.co",SB_KEY="sb_publishable_mQEkBq1w2cOAEqQ3CfugUA_GuRM4Tju";
+const CL={
+CRACKING:{t:'Fissuração',items:['Localização','Elemento','Piso','Orientação','Comprimento','Abertura','Fotografias','Histórico','Evolução','Intervenções recentes'],
+ sv:[['EST_VISUAL','Estudo preliminar de diagnóstico (inspeção visual + relatório)','un',2900,1,0,'','Inspeção visual e relatório preliminar'],
+ ['FISS_M1','Modalidade 1 — 12 fissurómetros (fornecer/instalar)','un',1000,1,1,'M','Medida cautelar'],
+ ['FISS_M2','Modalidade 2 — fissurómetros + 4 leituras mensais','un',3800,1,1,'M','Medida cautelar com leituras']]},
+CONCRETE_WATER_EXPOSURE:{t:'Betão exposto a água',items:['Elementos afetados','Tempo de exposição','Fissuração','Destacamento','Armaduras expostas','Corrosão aparente','Ensaios anteriores'],
+ sv:[['EST_VISUAL','Estudo preliminar com inspeção visual (inclui relatório)','un',2900,1,0,'','Inspeção visual e relatório'],
+ ['MOB','Verba fixa de mobilização','un',900,1,1,'',''],['PACO','Pacometria','zona',150,12,1,'','Deteção de armaduras'],
+ ['CARB','Carbonatação','ponto',40,12,1,'','Ensaio colorimétrico'],['CLOR','Teor de cloretos','zona',120,4,1,'','3 profundidades por zona'],
+ ['CAROTE','Resistência dos betões (carotes)','un',220,6,1,'','Carotes Ø75mm conforme NP EN 12504-1:2003'],['REL_ENS','Relatório de ensaios','un',1400,1,1,'','']]},
+LEVANTAMENTO_INTEGRAL:{t:'Levantamento integral',items:['Ano de construção','Sistema estrutural','Fundações','Geometria','Elementos estruturais','Fachadas','Patologias','Levantamento topográfico (nuvem de pontos)'],
+ sv:[['VERBA_LEV','Verba fixa (mobilização, acessos, energia)','un',1900,1,0,'',''],['INSP_ANOM','Inspeção visual — levantamento de anomalias','un',3200,1,0,'',''],
+ ['LEV_ANOM','Levantamento de anomalias (complementar)','un',1000,1,0,'',''],['MACACO','Macacos planos duplos','un',900,3,1,'',''],
+ ['RESIST','Resistografia (madeira)','un',50,20,1,'',''],['REL_FINAL','Relatório final (CAD + fotografia)','un',1900,1,1,'','']]},
+MONITORING:{t:'Monitorização',items:['Construções da envolvente a vistoriar','Situação de referência','Tipo de sensores/fissurómetros','Periodicidade de leituras'],
+ sv:[['VIST_ENV','Vistoria inicial das construções da envolvente + relatório de situação de referência','un',0,1,0,'','Preço a definir pelo engenheiro'],
+ ['INST','Instalação de instrumentação','un',0,1,1,'','A confirmar com MQT completo'],['LEIT','Sessões de leituras periódicas','un',0,1,1,'','A confirmar com MQT completo']]}};
+const RULES=[[/levantamento integral/i,'LEVANTAMENTO_INTEGRAL'],[/fissur/i,'CRACKING'],[/submers|inundad|nível freático/i,'CONCRETE_WATER_EXPOSURE'],[/instrumenta|monitoriz/i,'MONITORING']];
+const SAMPLES={
+'Amadora':`De: Nuno Barros, Engenharia e Serviços, Unipessoal Lda.\nAssunto: Edifício Av. Elias Garcia, lote 18 — Amadora\nTenho um trabalho num edifício construído em 2009, nunca habitado, com 3 caves submersas em água há vários anos. Pretendo avaliar o estado da estrutura para retomar a construção. Quais os ensaios que poderão ser feitos?`,
+'Libersil':`De: António Santos, Bazin Portugal\nAssunto: Edifício Libersil, Av. da Liberdade 38, Lisboa\nEdifício de serviços dos anos 1980. Existe uma fissura de grandes dimensões na fachada tardoz e desalinhamento do revestimento pétreo. Anexo relatório técnico. Pretendemos análise de gravidade, Nota Técnica e Caderno de Encargos.`,
+'Praça das Flores':`De: Edgar Pires, Gestão de Obras\nAssunto: Praça das Flores 32, Lisboa\nSolicitamos levantamento integral e diagnóstico estrutural de todo o edifício, para reabilitação. Edifício antigo com 2 pisos e águas furtadas, alvenaria resistente e pavimentos de madeira. Links: SwissTransfer com Existing Floorplans e Structural Report.`,
+'Escola (sem MQT)':`De: Lisboa SRU\nAssunto: Escola Básica Prof. Delfim Santos — Lisboa\nConsulta preliminar de mercado. Escola em funcionamento, trabalhos faseados. Instrumentação e monitorização de construções da envolvente. Resposta até 30 de setembro de 2026.`};
+const MES=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+let S={v:'dash',cur:null,list:[]};
+try{S.list=JSON.parse(localStorage.getItem('oz')||'[]')}catch(e){}
+const sb=(SB_URL&&SB_KEY&&window.supabase)?supabase.createClient(SB_URL,SB_KEY):null;let U=null,TM=null,syncError='';
+const localKey=()=>sb&&U?'oz_'+U.id:'oz';
+const save=()=>{try{localStorage.setItem(localKey(),JSON.stringify(S.list))}catch(e){syncError='O armazenamento local está cheio ou indisponível.';console.error(syncError,e)}
+ if(sb&&U){clearTimeout(TM);syncError='A guardar…';renderSync();TM=setTimeout(async()=>{const rows=S.list.map(p=>({id:p.id,owner:U.id,data:p,updated_at:new Date().toISOString()}));if(rows.length){const{error}=await sb.from('oz_drafts').upsert(rows,{onConflict:'owner,id'});syncError=error?'Erro ao sincronizar com Supabase: '+error.message:'';if(error)console.error(syncError)}else syncError='';renderSync()},500)}};
+function renderSync(){const el=$('syncStatus');if(el)el.textContent=syncError||(!sb?'Modo local — configure Supabase para sincronização':U?'Sincronizado com Supabase':'');}
+async function boot(){if(!sb){render();renderSync();return}
+ const{data,error:sessionError}=await sb.auth.getSession();if(sessionError){syncError='Erro de autenticação: '+sessionError.message;render();return}U=data.session?.user||null;
+ if(!U){S.v='login';render();return}
+  let userLocal=[];try{userLocal=JSON.parse(localStorage.getItem(localKey())||'[]')}catch(e){userLocal=[]}
+ const{data:rows,error}=await sb.from('oz_drafts').select('id,data').order('updated_at',{ascending:false});
+ if(error){syncError='Não foi possível carregar os rascunhos: '+error.message;console.error(syncError);S.v='dash';render();renderSync();return}
+  const cloud=rows.map(x=>x.data);S.list=cloud;
+  if(cloud.length===0){let legacy=[];try{if(!localStorage.getItem('oz_migrated_to'))legacy=JSON.parse(localStorage.getItem('oz')||'[]')}catch(e){}S.list=userLocal.length?userLocal:legacy;if(S.list.length)save();try{localStorage.setItem('oz_migrated_to',U.id)}catch(e){}}
+  else {try{localStorage.setItem(localKey(),JSON.stringify(S.list));if(!localStorage.getItem('oz_migrated_to'))localStorage.setItem('oz_migrated_to',U.id)}catch(e){}}
+ S.v='dash';render();renderSync()}
+async function login(){const r=await sb.auth.signInWithPassword({email:$('em').value,password:$('pw').value});if(r.error){$('lerr').textContent='Não foi possível entrar: '+r.error.message;return}boot()}
+async function logout(){clearTimeout(TM);await sb.auth.signOut();U=null;S.list=[];S.cur=null;S.v='login';render()}
+function loginV(){return`<h2>Entrar</h2><div class="card" style="max-width:380px"><label>Email</label><input id="em" type="email" autocomplete="username"><label style="display:block;margin-top:8px">Palavra-passe</label><input id="pw" type="password" autocomplete="current-password"><p id="lerr" style="color:var(--bad)"></p><button onclick="login()">Entrar</button></div>`}
+const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const eur=n=>n.toLocaleString('pt-PT',{style:'currency',currency:'EUR'});
+const F=(v,o)=>({v:v||'',o:v?o:'UNKNOWN'});
+
+function analyse(t){
+ const m=(re)=>(t.match(re)||[]);
+ const y=m(/\b(19[0-9]{2}|20[0-2][0-9])\b/)[1];
+ const cav=m(/(\d+|duas|três|tres)\s+caves/i)[1];
+ const loc=m(/\b(Lisboa|Porto|Amadora|Oeiras|Cascais|Sintra|Setúbal|Braga|Coimbra)\b/)[1];
+ let dl='';const d=t.match(/(?:até|prazo[^.]*?)\s*(?:dia\s*)?(\d{1,2}) de (\w+)(?: de (\d{4}))?/i);
+ if(d&&MES.includes(d[2].toLowerCase()))dl=`${d[3]||new Date().getFullYear()}-${String(MES.indexOf(d[2].toLowerCase())+1).padStart(2,'0')}-${d[1].padStart(2,'0')}`;
+ const obj=(t.split(/(?<=[.?!])\s+/).find(s=>/pretend|objetivo|avaliar|solicit|necessit/i.test(s))||'').trim();
+ const cat=[...new Set(RULES.filter(r=>r[0].test(t)).map(r=>r[1]))];
+ const cx=/escola|hospital|em funcionamento/i.test(t)?['Faseamento obrigatório','Coordenação com direção/gestão do edifício','Horário de trabalhos restrito']:[];
+ const miss=[];if(!y)miss.push('Ano de construção');if(!/planta|projeto/i.test(t))miss.push('Plantas / projeto de estabilidade');if(!loc)miss.push('Localização');if(/submers|inundad/i.test(t))miss.push('Acesso às caves (ainda inundadas?)');if(/anex/i.test(t)&&!/PDF/i.test(t))miss.push('Anexos referidos não carregados neste MVP');
+ const email=(t.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[])[0]||'';
+ return{client:F((t.match(/^(?:De|Cliente)\s*:\s*(.+)$/im)||[])[1],'EXTRACTED'),email:F(email,'EXTRACTED'),project:F((t.match(/^(?:Assunto|Obra)\s*:\s*(.+)$/im)||[])[1]||t.split('\n')[0].slice(0,70),'EXTRACTED'),
+ loc:F(loc,'EXTRACTED'),year:F(y,'INFERRED'),caves:F(cav,'EXTRACTED'),obj:F(obj,'INFERRED'),deadline:dl,cx,miss,cats:cat};
+}
+async function startAnalysis(value,mq){const text=(value??$('txt')?.value??'').trim();if(!text){alert('Cole o texto do pedido ou carregue um documento.');return}const b=document.querySelector('#app button[onclick^="startAnalysis"]');if(b){b.disabled=true;b.textContent='A analisar…'}let ai=null,aiError='';
+ try{if(sb&&U){const{data,error}=await sb.functions.invoke('analyse-request',{body:{text}});if(error)throw error;ai=data?.analysis||null}else if(sb)throw new Error('Inicie sessão para usar a análise inteligente.');}
+ catch(e){if(sb&&U)aiError='A extração inteligente falhou; os campos foram preenchidos pelas regras locais. '+(e.message||'');}
+ newReq(text,mq,ai,aiError)}
+function newReq(text,mq,ai,aiError=''){
+ const a=analyse(text+(mq?' '+mq.items.map(i=>i.name).join(' '):''));if(ai){for(const k of ['client','email','project','loc','year','caves','obj'])if(ai[k]?.value){a[k]=F(ai[k].value,ai[k].origin||'EXTRACTED')}if(ai.deadline?.value)a.deadline=ai.deadline.value;if(ai.categories?.length)a.cats=ai.categories;if(ai.constraints?.length)a.cx=[...new Set([...a.cx,...ai.constraints])];}
+ a.miss=[...new Set([...(ai?.missing_information||[]),...(!a.year.v?['Ano de construção']:[]),...(!/planta|projeto/i.test(text)?['Plantas / projeto de estabilidade']:[]),...(!a.loc.v?['Localização']:[]),...(/submers|inundad/i.test(text)?['Acesso às caves (ainda inundadas?)']:[])])];
+ const ck=a.cats[0]||'CRACKING';
+ const p={id:Date.now()*1000+Math.floor(Math.random()*1000),text,a,ck,ckOrigin:a.cats[0]?'SUGGESTED':'REQUIRES_REVIEW',checks:{},status:'ANALYSING',assum:false,items:[],locked:false,doc:null,vat:23,created:new Date().toISOString()};
+ p.aiMode=ai?'OPENAI':'RULES';p.aiError=aiError;
+ loadItems(p);p.pats=suggest(text+(mq?' '+mq.items.map(i=>i.name).join(' '):'')).map(c=>({c,on:false}));if(mq){p.mqt=mq.meta;p.items=mq.items}S.list.unshift(p);S.cur=p.id;S.v='ana';save();render();
+}
+function loadItems(p){p.items=CL[p.ck].sv.map(s=>({id:s[0],name:s[1],unit:s[2],price:s[3],qty:s[4],sq:s[4],opt:!!s[5],on:!s[5],grp:s[6],basis:s[7],o:s[3]?'SUGGESTED':'REQUIRES_REVIEW'}))}
+const cur=()=>S.list.find(p=>p.id===S.cur);
+function tot(p){return p.items.filter(i=>i.on).reduce((s,i)=>s+i.qty*i.price,0)}
+function go(v,id){S.v=v;if(id)S.cur=id;render();scrollTo(0,0)}
+function daysTo(d){return d?Math.ceil((new Date(d)-new Date(new Date().toDateString()))/864e5):null}
+
+function render(){
+ $('nav').innerHTML=(S.v!=='login'?'<button class="g" onclick="go(\'kb\')">Base de conhecimento</button> ':'')+(S.v!=='dash'&&S.v!=='login'?'<button class="g" onclick="go(\'dash\')">Dashboard</button> ':'')+(sb&&U?'<button class="g" onclick="logout()">Sair</button>':'');
+ const V={dash,new:nw,ana,rev,doc,login:loginV,kb:kbV}[S.v];$('app').innerHTML=V()+(S.v==='login'&&!sb?'<p class="alert">Supabase ainda não configurado. Preencha SB_URL e SB_KEY no início do script para ativar contas e sincronização.</p>':'')+'<p id="syncStatus" role="status" style="color:var(--mute);font-size:12px"></p>';if(S.v==='kb')kbList();renderSync();
+}
+function dash(){
+ const c=s=>S.list.filter(p=>s.includes(p.status)).length;
+ const al=S.list.filter(p=>{const d=daysTo(p.a.deadline);return d!==null&&d<=3&&!['GENERATED','SENT'].includes(p.status)});
+ return`<div class="row" style="justify-content:space-between;margin-bottom:14px"><h2 style="margin:0">Dashboard</h2><button onclick="go('new')">+ Nova proposta</button></div>
+ ${al.map(p=>`<div class="alert"><b>Prazo crítico:</b> ${esc(p.a.project.v)} — resposta até ${p.a.deadline} (${daysTo(p.a.deadline)} dias)</div>`).join('')}
+ <div class="card stats"><div><b>${c(['ANALYSING','NEEDS_INFORMATION'])}</b>Em análise</div><div><b>${c(['TECHNICAL_REVIEW','READY_FOR_APPROVAL'])}</b>Em revisão</div><div><b>${c(['GENERATED'])}</b>Geradas</div><div><b>${S.list.length}</b>Total</div></div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin-top:0">Propostas recentes</h3><input class="grow" style="max-width:290px" placeholder="Pesquisar cliente, obra ou número…" oninput="dashFilter(this.value)"></div><div id="proposalList">${proposalRows(S.list)}</div></div>
+  ${S.list.some(p=>p.visit?.date)?`<div class="card"><h3>Visitas agendadas</h3>${S.list.filter(p=>p.visit?.date).sort((a,b)=>a.visit.date.localeCompare(b.visit.date)).map(p=>`<div class="li" onclick="go('ana',${p.id})"><span>${esc(p.visit.date)} · ${esc(p.a.project.v)}</span><span>${esc(p.visit.note||'')}</span></div>`).join('')}</div>`:''}`;
+}
+function proposalRows(list){return list.length?list.map(p=>`<div class="li"><span style="flex:1" onclick="go('${p.status==='GENERATED'||p.status==='SENT'||p.status==='ACCEPTED'?'doc':p.locked?'rev':'ana'}',${p.id})">${esc(p.a.project.v||'(sem título)')} — ${esc(p.a.client.v||'Cliente desconhecido')}</span><span class="tag ${p.status==='GENERATED'||p.status==='SENT'||p.status==='ACCEPTED'?'VALIDATED':'SUGGESTED'}">${esc(p.status)}${p.doc?' · '+esc(p.doc.no):''}</span><button class="g" aria-label="Eliminar proposta" onclick="removeReq(${p.id})">Eliminar</button></div>`).join(''):'<p style="color:var(--mute)">Não há propostas correspondentes.</p>'}
+function dashFilter(q){const n=(q||'').toLocaleLowerCase('pt-PT');$('proposalList').innerHTML=proposalRows(S.list.filter(p=>[p.a.project.v,p.a.client.v,p.doc?.no,p.status].some(v=>(v||'').toLocaleLowerCase('pt-PT').includes(n))))}
+async function removeReq(id){const p=S.list.find(x=>x.id===id);if(!p||!confirm(`Eliminar o pedido «${p.a.project.v||p.a.client.v||'sem título'}»?`))return;if(sb&&U){const{error}=await sb.from('oz_drafts').delete().eq('owner',U.id).eq('id',id);if(error){syncError='Não foi possível eliminar: '+error.message;render();return}}S.list=S.list.filter(x=>x.id!==id);save();render()}
+const SV={};Object.values(CL).forEach(c=>c.sv.forEach(s=>SV[s[0]]=s));
+const MAP=[[/relat.*refer|vistoria.*envolv/i,'VIST_ENV'],[/pacometr/i,'PACO'],[/carbonat/i,'CARB'],[/cloret/i,'CLOR'],[/carote/i,'CAROTE'],[/fissur/i,'FISS_M1'],[/macaco/i,'MACACO'],[/resistogr/i,'RESIST']];
+async function readRequestFile(inp){
+ const files=[...inp.files||[]];if(!files.length)return;const chunks=[];
+ try{for(const f of files){if(f.size>15*1024*1024)throw new Error(`${f.name}: limite de 15 MB por ficheiro.`);let t='';
+  if(/\.pdf$/i.test(f.name)){if(!window.pdfjsLib)throw new Error('O leitor PDF não carregou. Verifique a ligação à internet e tente novamente.');pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),content=await page.getTextContent();t+=content.items.map(x=>x.str).join(' ')+'\n'}}
+  else if(/\.docx$/i.test(f.name)){if(!window.mammoth)throw new Error('O leitor DOCX não carregou. Verifique a ligação à internet e tente novamente.');t=(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value}
+  else if(/\.txt$/i.test(f.name))t=await f.text();else throw new Error(`${f.name}: formato não suportado. Use PDF, DOCX ou TXT.`);
+  if(!t.trim())throw new Error(`${f.name}: não foi encontrado texto. PDFs digitalizados precisam de OCR.`);chunks.push(`\n\n--- ${f.name} ---\n${t.trim()}`)}
+  $('txt').value=($('txt').value.trim()+chunks.join('')).trim();inp.value='';$('fileStatus').textContent=`${files.length} ficheiro(s) extraído(s). Reveja o texto antes de analisar.`}
+ catch(e){$('fileStatus').textContent=e.message;inp.value=''}}
+async function upl(inp){
+ const f=inp.files[0];if(!f)return;if(f.size>3*1024*1024){alert('O MQT deve ter no máximo 3 MB para caber no armazenamento do navegador.');inp.value='';return}
+ try{const buf=await f.arrayBuffer(),u=new Uint8Array(buf);let b64='';for(let i=0;i<u.length;i+=8192)b64+=String.fromCharCode.apply(null,u.subarray(i,i+8192));b64=btoa(b64);
+ const wb=XLSX.read(buf,{type:'array'}),A=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
+ let hd=A.slice(0,20).findIndex(r=>r.some(c=>/descri|designa/i.test(c)));const H=hd>=0?A[hd]:[],ix=(re,d)=>{const k=H.findIndex(c=>re.test(c));return k>=0?k:d};
+ const cD=ix(/descri|designa/i,1),cC=ix(/c[oó]d|art|item|n[ºo°]/i,0),cU=ix(/^un/i,2),cQ=ix(/quant|qtd/i,3),items=[];
+ A.forEach((r,k)=>{if(k<=hd||!String(r[cD]).trim()||!(+r[cQ]>0||String(r[cU]).trim()))return;
+  const d=String(r[cD]).trim(),m=MAP.find(x=>x[0].test(d)),s=m&&SV[m[1]],pr=s?s[3]:0;
+  items.push({id:m?m[1]:'MQT'+k,name:d,unit:String(r[cU]||'un'),price:pr,qty:+r[cQ]||1,sq:+r[cQ]||1,opt:false,on:true,grp:'',basis:'MQT '+r[cC],o:pr?'SUGGESTED':'REQUIRES_REVIEW',row:k})});
+ if(!items.length){alert('Não foram encontradas linhas com descrição e quantidade neste ficheiro.');return}
+ const txt=$('txt').value.trim()||'Assunto: '+f.name.replace(/\.\w+$/,'');
+  startAnalysis(txt,{items,meta:{name:f.name,b64,hd,pc:Math.max(...A.map(r=>r.length))}})}
+ catch(e){alert('Não foi possível ler o ficheiro: '+e.message)}}
+function nw(){
+ return`<h2>Nova proposta</h2><div class="card"><label>Cole o email do cliente</label><textarea id="txt" placeholder="Cole aqui o corpo do email da consulta…"></textarea>
+  <div class="row" style="margin-top:10px"><button onclick="startAnalysis()">Analisar pedido</button><button class="g" onclick="startAnalysis('Assunto: Nova proposta manual')">Criar manualmente</button></div>
+  <h3>Anexar documentos do pedido</h3><input type="file" accept=".pdf,.docx,.txt" multiple onchange="readRequestFile(this)"><p id="fileStatus" role="status" style="color:var(--mute);margin:6px 0 0">PDF, DOCX e TXT até 15 MB cada. PDFs digitalizados não incluem OCR.</p>
+ <h3>Carregar MQT do cliente (.xlsx)</h3><input type="file" accept=".xlsx,.xls" onchange="upl(this)"><p style="color:var(--mute);margin:6px 0 0">Cada linha é comparada ao catálogo; as sem correspondência ficam em REQUIRES_REVIEW, sem preço.</p>
+ <h3>Casos reais</h3><div class="row">${Object.keys(SAMPLES).map(k=>`<button class="g" onclick="$('txt').value=SAMPLES['${k}']">${k}</button>`).join('')}</div></div>
+  `;
+}
+const fld=(l,f,k)=>`<tr><td>${l}</td><td><input value="${esc(f.v)}" oninput="cur().a.${k}.v=this.value;cur().a.${k}.o='VALIDATED';save()" placeholder="desconhecido"></td><td><span class="tag ${f.o}">${f.o}</span></td></tr>`;
+function ana(){
+ const p=cur(),a=p.a,cl=(a.client.v||'').toLowerCase(),prev=cl?S.list.filter(q=>q.id!==p.id&&(q.a.client.v||'').toLowerCase()===cl):[],sim=S.list.filter(q=>q.id!==p.id&&q.doc&&q.ck===p.ck&&!q.mqt);
+ return`<h2>Análise do pedido</h2><p class="tag ${p.aiMode==='OPENAI'?'VALIDATED':'SUGGESTED'}">Extração: ${p.aiMode==='OPENAI'?'OpenAI':'regras locais'}</p>${p.aiError?`<div class="alert">${esc(p.aiError)}</div>`:''}${p.visit?.date?`<div class="card"><b>Visita agendada:</b> ${esc(p.visit.date)} ${esc(p.visit.note||'')} <button class="g" onclick="visitBook()">Alterar</button><button class="g" onclick="visitCancel()">Cancelar</button></div>`:''}${prev.length?`<div class="card">Já trabalhou com este cliente <b>${prev.length}</b> ${prev.length>1?'vezes':'vez'}: ${prev.map(q=>esc(q.doc?q.doc.no:q.a.project.v)).join(', ')}</div>`:''}${sim.length&&!p.mqt?`<div class="card">Propostas semelhantes: ${sim.slice(0,3).map(q=>`<button class="g" onclick="dupFrom(${q.id})">Usar ${q.doc.no} como ponto de partida</button>`).join(' ')}</div>`:''}<div class="two"><div class="card"><table>${fld('Cliente',a.client,'client')}${fld('Email',a.email,'email')}${fld('Obra',a.project,'project')}${fld('Local',a.loc,'loc')}${fld('Ano de construção',a.year,'year')}${fld('Nº de caves',a.caves,'caves')}${fld('Objetivo',a.obj,'obj')}
+ <tr><td>Prazo</td><td><input type="date" value="${a.deadline}" onchange="cur().a.deadline=this.value;save()"></td><td><span class="tag ${a.deadline?'EXTRACTED':'UNKNOWN'}">${a.deadline?'EXTRACTED':'UNKNOWN'}</span></td></tr></table></div>
+ <div><div class="card"><h3 style="margin-top:0">Checklist <span class="tag ${p.ckOrigin}">${p.ckOrigin}</span></h3>
+ <select onchange="cur().ck=this.value;cur().ckOrigin='VALIDATED';cur().checks={};loadItems(cur());save();render()">${Object.entries(CL).map(([k,c])=>`<option value="${k}" ${k===p.ck?'selected':''}>${c.t}</option>`).join('')}</select>
+ ${CL[p.ck].items.map(i=>`<label style="display:block;margin-top:6px"><input type="checkbox" style="width:auto" ${p.checks[i]?'checked':''} onchange="cur().checks['${i}']=this.checked;save()"> ${i}</label>`).join('')}</div>
+ ${a.cx.length?`<div class="card"><h3 style="margin-top:0">Condicionantes de execução</h3>${a.cx.map(x=>`<div>☑ ${esc(x)}</div>`).join('')}</div>`:''}</div></div>
+ ${patCard(p)}
+ ${a.miss.length?`<div class="card"><h3 style="margin-top:0">Informação em falta</h3>${a.miss.map(m=>`<div>⚠ ${esc(m)}</div>`).join('')}
+ <div class="row" style="margin-top:12px"><button class="g" onclick="askInfo()">Criar email a pedir informação</button><button class="g" onclick="visitBook()">Agendar visita</button></div></div>`:''}
+ <div class="row"><button onclick="cur().assum=true;cur().status='TECHNICAL_SCOPE';save();go('rev')">${a.miss.length?'Continuar com pressupostos':'Avançar para o âmbito'}</button></div>`;
+}
+function askInfo(){const p=cur(),b=`Exmos. Senhores,\n\nEm resposta ao vosso pedido relativo a "${p.a.project.v}", agradecemos o envio da seguinte informação:\n${p.a.miss.map(m=>'- '+m).join('\n')}\n\nCom os melhores cumprimentos,\nOZ`;openMail(p.a.email.v,`Informação em falta — ${p.a.project.v}`,b)}
+function visitBook(){const p=cur(),d=prompt('Data e hora da visita (AAAA-MM-DD HH:MM):',p.visit?.date||'');if(d===null)return;const date=d.trim();if(date&&!/^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?$/.test(date)){alert('Use AAAA-MM-DD ou AAAA-MM-DD HH:MM.');return}const note=prompt('Nota ou contacto para a visita:',p.visit?.note||'');if(note===null)return;p.visit=date?{date,note,status:'SCHEDULED'}:null;lg(p,date?'Visita agendada para '+date:'Visita removida');save();render()}
+function visitCancel(){const p=cur();p.visit=null;lg(p,'Visita cancelada');save();render()}
+function rev(){
+ const p=cur(),L=p.locked;
+ return`<h2>Âmbito sugerido — revisão do engenheiro</h2><div class="card"><table><tr><th>Serviço</th><th>Origem</th><th class="n">Qtd</th><th class="n">Preço unit.</th><th class="n">Total</th><th>Ativo</th></tr>
+ ${p.items.map((i,k)=>`<tr title="${esc(i.basis)}" style="${i.on?'':'opacity:.5'}"><td>${esc(i.name)}${i.opt?' <em style="color:var(--mute)">(opcional)</em>':''}${i.grp?' <em style="color:var(--mute)">(alternativa)</em>':''}${i.basis?`<div style="font-size:12px;color:var(--mute)">Base: ${esc(i.basis)}</div>`:''}</td><td><span class="tag ${i.o}">${i.o}</span></td>
+ <td class="n"><input type="number" min="0" value="${i.qty}" ${L?'disabled':''} onchange="edit(${k},'qty',this.value)"></td><td class="n"><input type="number" min="0" value="${i.price}" ${L?'disabled':''} onchange="edit(${k},'price',this.value)"></td>
+ <td class="n">${eur(i.qty*i.price)}</td><td>${i.opt||i.grp?`<input type="checkbox" style="width:auto" ${i.on?'checked':''} ${L?'disabled':''} onchange="tog(${k})">`:'●'}</td></tr>`).join('')}</table>
+ ${p.items.some(i=>i.o==='REQUIRES_REVIEW')?'<div class="alert" style="margin-top:12px">Existem linhas sem preço (REQUIRES_REVIEW). O preço tem de ser definido pelo engenheiro.</div>':''}
+ <div style="text-align:right;margin-top:12px">Subtotal <b>${eur(tot(p))}</b> · IVA <input type="number" style="width:60px" value="${p.vat}" ${L?'disabled':''} onchange="cur().vat=+this.value;save();render()">% · Total <b>${eur(tot(p)*(1+p.vat/100))}</b></div></div>
+ <div class="row">${L?`<button onclick="gen()">Aprovar e gerar proposta</button><button class="g" onclick="cur().locked=false;cur().status='TECHNICAL_SCOPE';save();render()">Reabrir edição</button>`:`<button onclick="validateScope()">Validar âmbito</button><button class="g" onclick="go('ana')">Voltar à análise</button>`}</div>${(p.log||[]).length?`<details class="card"><summary>Histórico de alterações (${p.log.length})</summary>${p.log.map(x=>`<div>${esc(x)}</div>`).join('')}</details>`:''}`;
+}
+const lg=(p,m)=>{(p.log=p.log||[]).push(new Date().toLocaleString('pt-PT')+' — '+m)};
+function validateScope(){const p=cur();if(!p.items.some(i=>i.on)){alert('Ative pelo menos uma linha de âmbito antes de validar.');return}p.items.forEach(i=>{if(i.on&&i.o!=='REQUIRES_REVIEW'&&i.price>0)i.o='VALIDATED'});p.locked=true;p.status='READY_FOR_APPROVAL';lg(p,'Âmbito validado para aprovação');save();render()}
+function edit(k,f,v){const p=cur(),i=p.items[k],n=v===''?null:Number(v);if(n===null||!Number.isFinite(n)||n<0){alert('Introduza um valor numérico igual ou superior a zero.');render();return}lg(p,`${i.name}: ${f==='qty'?'quantidade':'preço'} de ${i[f]} para ${n}`);i[f]=n;if(f==='price')i.o=n>0?'VALIDATED':'REQUIRES_REVIEW';save();render()}
+function tog(k){const p=cur(),i=p.items[k];i.on=!i.on;lg(p,`${i.name}: ${i.on?'ativado':'desativado'}`);if(i.on&&i.grp)p.items.forEach((j,n)=>{if(n!==k&&j.grp===i.grp)j.on=false});save();render()}
+function dupFrom(id){const q=S.list.find(x=>x.id===id),p=cur();p.items=JSON.parse(JSON.stringify(q.items)).map(i=>({...i,o:'SUGGESTED'}));lg(p,'Âmbito copiado da proposta '+q.doc.no);save();go('rev')}
+async function gen(){
+  const p=cur();
+  if(!p?.locked){alert('Valide primeiro o âmbito.');return}
+  const review=p.items.filter(i=>i.on&&(i.o==='REQUIRES_REVIEW'||i.price===0));if(review.length&&!confirm(`Há ${review.length} linha(s) ativa(s) sem preço validado. Os valores serão assinalados para revisão na proposta. Continuar?`))return;
+  if(!p.doc){const yy=String(new Date().getFullYear()).slice(2),names={p:'proposal',r:'ref',c:'consulta'};
+   const n=async(k,d)=>{if(sb){if(!U)throw new Error('Inicie sessão para gerar uma proposta numerada.');const{data,error}=await sb.rpc('next_counter',{p_name:names[k]});if(error||data==null)throw new Error('O contador Supabase falhou ('+(error?.message||'sem resultado')+'). Nenhuma numeração local foi usada para evitar duplicados.');return data}
+    const key='oz_'+k;let v=+(localStorage.getItem(key)||d)+1;localStorage.setItem(key,v);return v};
+   let no,ref,cons;try{no=await n('p',402);ref=await n('r',515);cons=await n('c',26493)}catch(e){alert('Não foi possível gerar a proposta: '+e.message);return}
+   p.doc={no:`${no}/${yy}-00`,ref,cons,date:new Date().toLocaleDateString('pt-PT'),s:{}}}
+  p.status='GENERATED';save();go('doc');
+ }
+function dl(name,blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000)}
+const fname=(p,x)=>`OZ_Proposta_${p.doc.no.replace('/','-')}.${x}`;
+function dlPdf(){const p=cur();html2pdf().set({margin:12,filename:fname(p,'pdf'),html2canvas:{scale:2},jsPDF:{unit:'mm',format:'a4'}}).from(document.querySelector('.paper')).save()}
+function dlDoc(){const p=cur();dl(fname(p,'doc'),new Blob(['<html xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>body{font-family:Georgia,serif}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ccc;padding:4px}</style></head><body>'+document.querySelector('.paper').innerHTML+'</body></html>'],{type:'application/msword'}))}
+function dlMqt(){const p=cur(),m=p.mqt,wb=XLSX.read(m.b64,{type:'base64'}),ws=wb.Sheets[wb.SheetNames[0]];
+ if(m.hd>=0)XLSX.utils.sheet_add_aoa(ws,[['Preço unitário (OZ)','Total (OZ)','Observações']],{origin:{r:m.hd,c:m.pc}});
+ p.items.filter(i=>i.row!=null).forEach(i=>XLSX.utils.sheet_add_aoa(ws,[[i.price||'',i.price?i.price*i.qty:'',i.o==='REQUIRES_REVIEW'&&!i.price?'A rever pelo engenheiro':'']],{origin:{r:i.row,c:m.pc}}));
+ dl(`MQT_preenchido_${p.doc.no.replace('/','-')}.xlsx`,new Blob([XLSX.write(wb,{type:'array',bookType:'xlsx'})],{type:'application/octet-stream'}))}
+function setSt(s){const p=cur();p.status=s;lg(p,'Estado: '+s);save();render()}
+function openMail(to,subject,body){const url='mailto:'+encodeURIComponent(to||'')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);location.href=url}
+function mail(){const p=cur(),d=p.doc,b=`Exmos. Senhores,\n\nEm resposta ao vosso pedido, junto se envia a Proposta Nº. ${d.no} (${p.a.project.v}).\n\nCom os melhores cumprimentos,\nOZ`;openMail(p.a.email.v,`Proposta Nº. ${d.no} — ${p.a.project.v}`,b)}
+function doc(){
+ const p=cur(),a=p.a,d=p.doc;d.s=d.s||{};const md=p.mode||'full';
+ const on=p.items.filter(i=>i.on),base=on.filter(i=>!i.opt),opt=on.filter(i=>i.opt),TBD='<span style="color:#b7791f">[A definir pelo engenheiro]</span>';
+ const cl=(a.client.v||'').toLowerCase(),pq=S.list.find(q=>q!==p&&q.doc&&q.doc.s&&q.doc.s.pag&&(q.a.client.v||'').toLowerCase()===cl&&cl);
+ const cleanHtml=(v)=>window.DOMPurify?DOMPurify.sanitize(v,{ALLOWED_TAGS:['p','br','ul','ol','li','b','strong','i','em'] ,ALLOWED_ATTR:[]}):esc(v).replace(/\n/g,'<br>');
+ const ed=(k,def)=>`<div contenteditable="true" oninput="cur().doc.s['${k}']=this.innerHTML;save()">${cleanHtml(d.s[k]!=null?d.s[k]:def)}</div>`;
+ const row=i=>`<tr><td>${esc(i.name)}</td><td style="text-align:right">${i.qty} ${esc(i.unit)} × ${i.price?eur(i.price):'—'}</td><td style="text-align:right">${i.price?eur(i.qty*i.price):TBD}</td></tr>`;
+ const st=p.status;
+ return`<div class="card noprint"><div class="row"><select style="width:auto" onchange="cur().mode=this.value;save();render()"><option value="full" ${md==='full'?'selected':''}>Proposta completa</option><option value="tec" ${md==='tec'?'selected':''}>Proposta técnica (sem preços)</option><option value="com" ${md==='com'?'selected':''}>Proposta comercial (sem condições técnicas)</option></select>
+ <button onclick="dlPdf()">Descarregar PDF</button><button class="g" onclick="dlDoc()">Descarregar Word</button>${p.mqt?'<button class="g" onclick="dlMqt()">Descarregar MQT preenchido (.xlsx)</button>':''}<button class="g" onclick="print()">Imprimir</button></div>
+ <div class="row" style="margin-top:10px"><span class="tag ${st==='SENT'||st==='ACCEPTED'?'VALIDATED':'SUGGESTED'}">${st}</span><button class="g" onclick="mail()">Abrir rascunho de email</button><button class="g" onclick="setSt('SENT')">Marcar como enviada</button><button class="g" onclick="setSt('ACCEPTED')">Aceite</button><button class="g" onclick="setSt('REJECTED')">Rejeitada</button><button class="g" onclick="go('rev')">Voltar ao âmbito</button></div>
+ <p style="margin:8px 0 0;color:var(--mute)">As secções a tracejado são editáveis e ficam guardadas. O email abre sem anexo: junte o ficheiro descarregado.</p></div>
+ <div class="paper"><div style="display:flex;justify-content:space-between;gap:12px"><b>OZ — Diagnóstico, Levantamento e Controlo de Qualidade em Estruturas e Fundações, Lda.</b><span style="text-align:right;white-space:nowrap">N. ref. ${d.ref}<br>Consulta ${d.cons}</span></div>
+ <p style="margin-top:22px">Lisboa, ${d.date}<br><b>${esc(a.client.v)||TBD}</b></p><p><b>Proposta Nº. ${d.no}</b><br>Assunto: ${esc(a.project.v)}${a.loc.v?' — '+esc(a.loc.v):''}</p>
+ <h4>1. Objeto</h4>${ed('obj','Em resposta ao pedido recebido, apresenta-se proposta técnica e comercial para: '+(esc(a.obj.v)||TBD))}
+ <h4>2. Considerações prévias</h4>${ed('cons',((p.pats||[]).filter(x=>x.on).length?'Patologias a investigar: '+(p.pats||[]).filter(x=>x.on).map(x=>esc(KD[x.c].replace(/ \+$/,''))).join('; ')+'. ':'')+(a.year.v?`Edifício de ${esc(a.year.v)}. `:'')+(a.cx.length?'Condicionantes: '+a.cx.join('; ').toLowerCase()+'. ':'')+(p.assum&&a.miss.length?'Proposta elaborada com pressupostos, a confirmar com a informação em falta ('+a.miss.join('; ')+'). ':''))}
+ ${md!=='com'?`<h4>3. Condições técnicas</h4>${ed('tec','<ul>'+on.map(i=>`<li><b>${esc(i.name)}</b>${i.basis?' — '+esc(i.basis):''}${i.opt?' (opcional)':''}</li>`).join('')+'</ul>')}`:''}
+ ${md!=='tec'?`<h4>4. Preços</h4><table>${base.length?'<tr><th colspan=3 style="text-align:left">Base</th></tr>'+base.map(row).join(''):''}${opt.length?'<tr><th colspan=3 style="text-align:left">Opcional</th></tr>'+opt.map(row).join(''):''}
+ <tr><td colspan=2 style="text-align:right">Subtotal</td><td style="text-align:right">${eur(tot(p))}</td></tr><tr><td colspan=2 style="text-align:right">IVA (${p.vat}%)</td><td style="text-align:right">${eur(tot(p)*p.vat/100)}</td></tr><tr><td colspan=2 style="text-align:right"><b>Total</b></td><td style="text-align:right"><b>${eur(tot(p)*(1+p.vat/100))}</b></td></tr></table>
+ <h4>5. Condições de pagamento</h4>${ed('pag',pq?pq.doc.s.pag:TBD)}`:''}
+ <h4>6. Prazos</h4>${ed('praz',TBD)}<h4>7. Exclusões</h4>${ed('excl',TBD)}
+ <div class="foot">ISO 9001 · Marca de Qualidade LNEC · membro GECoRPA<br>O Gerente, ____________________</div></div>`;
+}
+boot();
+</script></body></html>
