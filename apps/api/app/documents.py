@@ -11,6 +11,27 @@ from fastapi import HTTPException, UploadFile
 from openpyxl import load_workbook
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+IMAGE_MIME_TYPES = {
+    ".jpg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".jpeg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+    ".webp": ("image/webp", b"RIFF"),
+}
+
+
+def image_mime_type(filename: str, data: bytes) -> str | None:
+    """Return a supported image MIME type only when extension and file signature agree."""
+    suffix = filename.lower().rsplit(".", 1)[-1]
+    suffix = f".{suffix}" if "." in filename else ""
+    expected = IMAGE_MIME_TYPES.get(suffix)
+    if not expected:
+        return None
+    mime_type, signature = expected
+    if not data.startswith(signature):
+        raise HTTPException(415, "A imagem não corresponde ao formato indicado no nome do ficheiro.")
+    if mime_type == "image/webp" and data[8:12] != b"WEBP":
+        raise HTTPException(415, "A imagem WebP não é válida.")
+    return mime_type
 
 
 def extract_mqt_rows(filename: str, data: bytes) -> list[dict[str, str | float | None]]:
@@ -78,8 +99,9 @@ def extract_mqt_rows(filename: str, data: bytes) -> list[dict[str, str | float |
     return items[:500]
 
 
-async def extract_upload(file: UploadFile) -> str:
-    data = await file.read(MAX_UPLOAD_BYTES + 1)
+async def extract_upload(file: UploadFile, data: bytes | None = None) -> str:
+    if data is None:
+        data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "O anexo excede o limite de 15 MB.")
     name = (file.filename or "anexo").lower()
@@ -136,4 +158,4 @@ async def extract_upload(file: UploadFile) -> str:
             return "\n".join(rows)
         except Exception as exc:
             raise HTTPException(422, "Não foi possível ler esta folha Excel.") from exc
-    raise HTTPException(415, "Formato não suportado. Usa PDF, DOCX, XLSX, TXT, CSV ou EML.")
+    raise HTTPException(415, "Formato não suportado. Usa PDF, DOCX, XLSX, TXT, CSV, EML ou imagens JPG, PNG e WebP.")

@@ -274,7 +274,7 @@ function Metric({ label, value, hint, icon }: { label: string; value: number; hi
 
 function NewRequest({ token, onCancel, onCreated }: { token: string; onCancel: () => void; onCreated: (id: string, warning?: string) => void }) {
   const [values, setValues] = useState({ client_name: "", client_email: "", project_name: "", location: "", deadline: "", raw_text: "" });
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
@@ -282,7 +282,7 @@ function NewRequest({ token, onCancel, onCreated }: { token: string; onCancel: (
     try {
       const form = new FormData();
       Object.entries(values).forEach(([key, value]) => form.append(key, value));
-      if (file) form.append("file", file);
+      files.forEach((file) => form.append("files", file));
       const result = await api<{ request: ProposalRequest; analysis_error?: string; storage_error?: string }>(token, "/api/proposals/analyze", { method: "POST", body: form });
       const warning = [result.analysis_error, result.storage_error].filter(Boolean).join(" ");
       onCreated(result.request.id, warning || undefined);
@@ -290,14 +290,22 @@ function NewRequest({ token, onCancel, onCreated }: { token: string; onCancel: (
     finally { setWorking(false); }
   }
   function cancelCreation() {
-    const hasContent = Object.values(values).some((value) => value.trim()) || Boolean(file);
+    const hasContent = Object.values(values).some((value) => value.trim()) || files.length > 0;
     if (hasContent && !window.confirm("Cancelar e descartar os dados deste novo pedido? Ainda não foram guardados.")) return;
     onCancel();
   }
+  function selectFiles(selected: FileList | null) {
+    const next = Array.from(selected ?? []);
+    const totalBytes = next.reduce((sum, item) => sum + item.size, 0);
+    if (next.length > 5) { setError("Podes anexar até 5 ficheiros por pedido."); return; }
+    if (totalBytes > 15 * 1024 * 1024) { setError("O total dos anexos não pode exceder 15 MB."); return; }
+    setFiles(next);
+    setError("");
+  }
   const set = (key: keyof typeof values, value: string) => setValues((old) => ({ ...old, [key]: value }));
   return <>
-    <section className="welcome-row compact"><div><p className="eyebrow">NOVO REGISTO</p><h1>Começar uma proposta</h1><p className="subhead">Cola o pedido do cliente ou anexa o email/documento original.</p></div><button className="text-button" onClick={cancelCreation} disabled={working}>← Cancelar pedido</button></section>
-    <form className="panel form-panel" onSubmit={submit}><div className="form-section-title"><span className="step-number">01</span><div><h2>Pedido de origem</h2><p>A análise automática propõe campos para revisão. Não inventa informação ausente.</p></div></div><label className="textarea-label">Email ou descrição do pedido<textarea value={values.raw_text} onChange={(e) => set("raw_text", e.target.value)} placeholder="Ex.: Bom dia, pretendemos uma inspeção e diagnóstico às fissuras observadas no edifício localizado em…" rows={7} /></label><label className="upload-zone"><span className="upload-icon">↑</span><span><b>{file ? file.name : "Anexar ficheiro"}</b><small>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · ${(file.name.split(".").pop() ?? "").toUpperCase()}` : "PDF, Word, Excel, TXT ou email · até 15 MB"}</small></span><input type="file" accept=".pdf,.docx,.xlsx,.txt,.csv,.eml" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><div className="form-divider" /><div className="form-section-title"><span className="step-number">02</span><div><h2>Dados conhecidos</h2><p>Preenche o que já sabes. Podes confirmar ou alterar tudo após a análise.</p></div></div><div className="form-grid"><label>Nome do cliente<input value={values.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Empresa ou contacto" /></label><label>Email do cliente<input type="email" value={values.client_email} onChange={(e) => set("client_email", e.target.value)} placeholder="nome@empresa.pt" /></label><label>Obra / projeto<input value={values.project_name} onChange={(e) => set("project_name", e.target.value)} placeholder="Nome da obra" /></label><label>Localização<input value={values.location} onChange={(e) => set("location", e.target.value)} placeholder="Cidade ou morada" /></label><label>Prazo pretendido<input type="date" value={values.deadline} onChange={(e) => set("deadline", e.target.value)} /></label></div>{error && <div className="inline-error">{error}</div>}<div className="form-actions"><button className="secondary" type="button" onClick={cancelCreation} disabled={working}>Cancelar pedido</button><button className="primary" disabled={working || (!values.raw_text.trim() && !file)}>{working ? <><span className="loader light" /> A analisar…</> : <>Analisar pedido <span>→</span></>}</button></div><p className="privacy-hint">Os anexos são extraídos pelo servidor privado. PDFs digitalizados ainda precisam de OCR.</p></form>
+    <section className="welcome-row compact"><div><p className="eyebrow">NOVO REGISTO</p><h1>Começar uma proposta</h1><p className="subhead">Cola o pedido do cliente ou usa documentos e fotografias como base.</p></div><button className="text-button" onClick={cancelCreation} disabled={working}>← Cancelar pedido</button></section>
+    <form className="panel form-panel" onSubmit={submit}><div className="form-section-title"><span className="step-number">01</span><div><h2>Pedido de origem</h2><p>A análise automática propõe campos para revisão. Não inventa informação ausente.</p></div></div><label className="textarea-label">Email ou descrição do pedido<textarea value={values.raw_text} onChange={(e) => set("raw_text", e.target.value)} placeholder="Ex.: Bom dia, pretendemos uma inspeção e diagnóstico às fissuras observadas no edifício localizado em…" rows={7} /></label><label className="upload-zone"><span className="upload-icon">↑</span><span><b>{files.length ? `${files.length} anexo(s) selecionado(s)` : "Anexar imagens e/ou documentos"}</b><small>{files.length ? files.map((item) => `${item.name} (${(item.size / 1024 / 1024).toFixed(1)} MB)`).join(" · ") : "Fotos JPG, PNG, WebP; PDF, Word, Excel, TXT ou email · até 5 ficheiros e 15 MB no total"}</small></span><input type="file" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.docx,.xlsx,.txt,.csv,.eml" onChange={(e) => { selectFiles(e.target.files); e.currentTarget.value = ""; }} /></label>{files.length > 0 && <button className="text-button" type="button" onClick={() => { setFiles([]); setError(""); }}>Remover anexos</button>}<div className="form-divider" /><div className="form-section-title"><span className="step-number">02</span><div><h2>Dados conhecidos</h2><p>Preenche o que já sabes. Podes confirmar ou alterar tudo após a análise.</p></div></div><div className="form-grid"><label>Nome do cliente<input value={values.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Empresa ou contacto" /></label><label>Email do cliente<input type="email" value={values.client_email} onChange={(e) => set("client_email", e.target.value)} placeholder="nome@empresa.pt" /></label><label>Obra / projeto<input value={values.project_name} onChange={(e) => set("project_name", e.target.value)} placeholder="Nome da obra" /></label><label>Localização<input value={values.location} onChange={(e) => set("location", e.target.value)} placeholder="Cidade ou morada" /></label><label>Prazo pretendido<input type="date" value={values.deadline} onChange={(e) => set("deadline", e.target.value)} /></label></div>{error && <div className="inline-error">{error}</div>}<div className="form-actions"><button className="secondary" type="button" onClick={cancelCreation} disabled={working}>Cancelar pedido</button><button className="primary" disabled={working || Boolean(error) || (!values.raw_text.trim() && !files.length)}>{working ? <><span className="loader light" /> A analisar…</> : <>Analisar pedido <span>→</span></>}</button></div><p className="privacy-hint">As fotos são analisadas visualmente pela IA e guardadas no espaço privado. A avaliação é preliminar; o engenheiro confirma o diagnóstico. PDFs digitalizados continuam a precisar de OCR.</p></form>
   </>;
 }
 

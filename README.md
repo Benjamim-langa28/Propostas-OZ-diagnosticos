@@ -104,9 +104,10 @@ Abre [http://localhost:3000](http://localhost:3000). A documentação interativa
 ## Fluxo incluído
 
 - Registo e início de sessão com Supabase Auth.
-- Registo de pedidos a partir de texto, email colado ou anexo PDF/DOCX/XLSX/TXT/CSV/EML; os originais ficam num bucket privado e o texto extraído no pedido.
+- Registo de pedidos a partir de texto, email colado, imagens JPG/PNG/WebP ou anexos PDF/DOCX/XLSX/TXT/CSV/EML; aceita até 5 ficheiros e 15 MB no total, guarda os originais num bucket privado e associa os resultados extraídos ao pedido.
 - Extração em Python do assunto, empresa cliente, NIF/NUIT, endereço, telefone, email, obra, localização, objetivo, âmbito e assinatura do remetente; a empresa cliente fica separada de quem enviou o email.
 - Extração estruturada por OpenAI, validada por esquema Pydantic, com alternativa por regras sem chave de IA. O orquestrador separa o tipo de pedido, problema, dados do cliente/remetente e recomendações de visita.
+- Análise multimodal de fotografias com OpenAI Responses API, combinada com texto e documentos no mesmo pedido; a API só cria o pedido quando a análise visual termina. Configura `OPENAI_API_KEY` em `apps/api/.env`; sem essa chave, pedidos baseados em imagem recebem uma mensagem de configuração em vez de uma análise falsa.
 - Revisão e gravação dos dados extraídos, estado do pedido, agenda de visitas e acesso aos anexos privados.
 - Criação numerada de proposta, catálogo de serviços, quantidades, preços, IVA e totais.
 - Geração e transferência de PDF, versões imutáveis da proposta e estados de aprovação/envio.
@@ -122,6 +123,7 @@ A arquitetura atual está descrita em [`docs/AI_ARCHITECTURE.md`](docs/AI_ARCHIT
 ## Limites a conhecer
 
 - PDF digitalizado ainda requer OCR; o sistema informa quando não consegue extrair texto.
+- A interpretação de imagens descreve sinais visíveis e sugere dados preliminares. Fotografias, por si só, não confirmam causa, gravidade nem diagnóstico; a validação do engenheiro continua necessária.
 - A base técnica atual usa tabelas relacionais e pesquisa fuzzy de propostas; ainda não existe ingestão de documentos técnicos, embeddings ou pgvector.
 - A primeira migração cria dados com isolamento RLS por utilizador. As propostas e clientes não são automaticamente partilhados entre contas distintas.
 - As referências de diagnóstico herdadas do sistema anterior precisam de validação de um engenheiro antes de uso técnico.

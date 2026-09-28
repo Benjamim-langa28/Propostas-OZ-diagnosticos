@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import CurrentUser, current_user
 from app.config import settings
-from app.documents import extract_mqt_rows, extract_upload
+from app.documents import MAX_UPLOAD_BYTES, extract_mqt_rows, extract_upload, image_mime_type
 from app.email_intake import looks_like_email
 from app.ai.orchestrator import orchestrate_request_analysis
 from app.proposal_pdf import build_proposal_pdf
@@ -135,27 +135,71 @@ async def analyze_request(
     location: str = Form(default=""),
     deadline: str = Form(default=""),
     file: UploadFile | None = File(default=None),
+    files: list[UploadFile] = File(default=[]),
     user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    extracted_text = await extract_upload(file) if file else ""
-    file_bytes = b""
-    if file:
-        await file.seek(0)
-        file_bytes = await file.read()
-    mqt_rows = extract_mqt_rows(file.filename or "", file_bytes) if file else []
-    content = "\n\n".join(part for part in [raw_text.strip(), extracted_text.strip()] if part)
-    if not content:
-        raise HTTPException(422, "Cola o email do cliente ou anexa um documento.")
+    uploads = ([file] if file else []) + list(files or [])
+    if len(uploads) > 5:
+        raise HTTPException(413, "Podes anexar até 5 ficheiros por pedido.")
+    if not raw_text.strip() and not uploads:
+        raise HTTPException(422, "Escreve a descrição do pedido ou anexa um documento/imagem.")
+
+    total_upload_bytes = 0
+    image_inputs: list[dict[str, Any]] = []
+    attachments: list[dict[str, Any]] = []
+    extracted_parts: list[str] = []
+    mqt_rows: list[dict[str, str | float | None]] = []
+    for upload in uploads:
+        filename = PurePath(upload.filename or "anexo").name
+        data = await upload.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "Cada anexo deve ter no máximo 15 MB.")
+        total_upload_bytes += len(data)
+        if total_upload_bytes > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "O total dos anexos não pode exceder 15 MB.")
+        image_type = image_mime_type(filename, data)
+        if image_type:
+            image_inputs.append({"data": data, "mime_type": image_type})
+            extracted = ""
+            mime_type = image_type
+        else:
+            extracted = await extract_upload(upload, data)
+            mqt_rows.extend(extract_mqt_rows(filename, data))
+            mime_by_extension = {
+                ".pdf": "application/pdf",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".txt": "text/plain", ".csv": "text/csv", ".eml": "message/rfc822",
+            }
+            mime_type = (mime_by_extension.get(PurePath(filename).suffix.lower())
+                         or upload.content_type or mimetypes.guess_type(filename)[0]
+                         or "application/octet-stream")
+        if extracted.strip():
+            extracted_parts.append(extracted.strip())
+        attachments.append({"file": upload, "filename": filename, "data": data,
+                            "mime_type": mime_type, "extracted_text": extracted})
+
+    content = "\n\n".join(part for part in [raw_text.strip(), *extracted_parts] if part)
+    if not content and not image_inputs:
+        raise HTTPException(422, "O anexo não contém texto legível. Cola uma descrição ou anexa uma imagem.")
     if len(content) > 60000:
         content = content[:60000]
     fields = {"client_name": client_name.strip(), "client_email": client_email.strip(),
               "project_name": project_name.strip(), "location": location.strip(),
               "deadline": deadline.strip()}
-    orchestrated = await orchestrate_request_analysis(content, fields, user.token)
+    if image_inputs and not settings.openai_api_key:
+        raise HTTPException(503, "Para analisar imagens, configura OPENAI_API_KEY na API Python.")
+    orchestrated = await orchestrate_request_analysis(content, fields, user.token, image_inputs)
     result = orchestrated["fields"]
     analysis_error = orchestrated["analysis_error"]
     mode = orchestrated["analysis_mode"]
     technical_diagnosis = orchestrated["technical_diagnosis"]
+    if image_inputs and mode != "OPENAI":
+        raise HTTPException(502, analysis_error or "Não foi possível analisar visualmente as imagens. Tenta novamente.")
+    request_content = content
+    if not request_content and image_inputs:
+        visual_summary = result.get("problem_summary") or result.get("objective") or "Sinais visuais sujeitos a confirmação técnica."
+        request_content = f"Resumo visual preliminar gerado por IA (validar por engenheiro):\n{visual_summary}"
     client_id = await create_client(user.token, user.id, result)
     project_id = None
     project_name_value = result.get("project_name")
@@ -170,7 +214,7 @@ async def analyze_request(
     status = "NEEDS_INFORMATION" if result.get("missing_information") else "DRAFT"
     request_rows = await rest(user.token, "proposal_requests", method="POST", body={
         "owner_id": user.id, "client_id": client_id, "project_id": project_id,
-        "title": title[:300], "source": "upload" if file else "email" if looks_like_email(content) else "chat", "raw_text": content,
+        "title": title[:300], "source": "upload" if attachments else "email" if looks_like_email(content) else "chat", "raw_text": request_content,
         "extracted_fields": result, "deadline": result.get("deadline"), "status": status,
     }, prefer="return=representation")
     request_row = request_rows[0]
@@ -185,33 +229,32 @@ async def analyze_request(
             "owner_id": user.id, "request_id": request_row["id"], **row,
             "origin": "REQUIRES_REVIEW",
         } for row in mqt_rows], prefer="return=minimal")
-    storage_error = None
-    if file:
-        filename = PurePath(file.filename or "anexo").name
+    storage_errors: list[str] = []
+    visual_summary = result.get("problem_summary") or result.get("objective") or ""
+    for index, attachment in enumerate(attachments, start=1):
+        filename = attachment["filename"]
         safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)[:180] or "anexo"
-        object_path = f"{user.id}/{request_row['id']}/{safe_name}"
-        mime_by_extension = {
-            ".pdf": "application/pdf",
-            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".txt": "text/plain", ".csv": "text/csv", ".eml": "message/rfc822",
-        }
-        mime_type = mime_by_extension.get(PurePath(safe_name).suffix.lower()) or file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        object_path = f"{user.id}/{request_row['id']}/{index}-{safe_name}"
+        attachment_text = attachment["extracted_text"]
+        if not attachment_text and attachment["mime_type"].startswith("image/"):
+            attachment_text = f"Resumo visual preliminar (validar por engenheiro): {visual_summary}"[:2000]
         documents = await rest(user.token, "documents", method="POST", body={
             "owner_id": user.id, "request_id": request_row["id"],
-            "file_name": filename, "mime_type": mime_type,
-            "extracted_text": extracted_text,
+            "file_name": filename, "mime_type": attachment["mime_type"],
+            "extracted_text": attachment_text,
         }, prefer="return=representation")
         try:
-            await upload_document(user.token, object_path, file_bytes, mime_type)
+            await upload_document(user.token, object_path, attachment["data"], attachment["mime_type"])
             await rest(user.token, "documents", method="PATCH", params={"id": f"eq.{documents[0]['id']}"},
                        body={"storage_path": object_path}, prefer="return=minimal")
         except HTTPException as exc:
-            storage_error = str(exc.detail)
+            storage_errors.append(str(exc.detail))
         except httpx.HTTPError:
-            storage_error = "O pedido foi guardado, mas a ligação ao armazenamento falhou."
+            storage_errors.append("O pedido foi guardado, mas a ligação ao armazenamento falhou.")
+    storage_error = " ".join(dict.fromkeys(storage_errors)) or None
     return {"request": request_row, "analysis": analysis_rows[0], "analysis_error": analysis_error,
-            "storage_error": storage_error}
+            "storage_error": storage_error, "image_count": len(image_inputs),
+            "attachment_count": len(attachments)}
 
 
 @router.get("/proposals/{request_id}")
