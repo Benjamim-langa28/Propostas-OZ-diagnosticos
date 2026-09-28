@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.auth import CurrentUser, current_user
 from app.config import settings
 from app.documents import extract_mqt_rows, extract_upload
+from app.email_intake import looks_like_email, parse_email_request
 from app.proposal_pdf import build_proposal_pdf
 from app.supabase_rest import rest
 from app.storage import signed_document_url, upload_document
@@ -34,6 +35,12 @@ ANALYSIS_SCHEMA = {
     "properties": {
         "client_name": {"type": ["string", "null"]},
         "client_email": {"type": ["string", "null"]},
+        "client_tax_id": {"type": ["string", "null"]},
+        "client_address": {"type": ["string", "null"]},
+        "client_phone": {"type": ["string", "null"]},
+        "client_contact_name": {"type": ["string", "null"]},
+        "client_contact_role": {"type": ["string", "null"]},
+        "client_contact_email": {"type": ["string", "null"]},
         "project_name": {"type": ["string", "null"]},
         "location": {"type": ["string", "null"]},
         "construction_year": {"type": ["integer", "null"]},
@@ -42,12 +49,23 @@ ANALYSIS_SCHEMA = {
         "deadline": {"type": ["string", "null"]},
         "categories": {"type": "array", "items": {"type": "string"}},
         "constraints": {"type": "array", "items": {"type": "string"}},
+        "requested_services": {"type": "array", "items": {"type": "string"}},
+        "requested_conditions": {"type": "array", "items": {"type": "string"}},
+        "source_subject": {"type": ["string", "null"]},
+        "sender_name": {"type": ["string", "null"]},
+        "sender_role": {"type": ["string", "null"]},
+        "sender_organization": {"type": ["string", "null"]},
+        "sender_email": {"type": ["string", "null"]},
+        "sender_phone": {"type": ["string", "null"]},
         "missing_information": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
         "client_name", "client_email", "project_name", "location", "construction_year",
         "basement_count", "objective", "deadline", "categories", "constraints",
-        "missing_information",
+        "requested_services", "requested_conditions", "source_subject", "sender_name",
+        "sender_role", "sender_organization", "sender_email", "sender_phone",
+        "client_tax_id", "client_address", "client_phone", "client_contact_name",
+        "client_contact_role", "client_contact_email", "missing_information",
     ],
 }
 
@@ -132,7 +150,9 @@ async def analyze_with_openai(text: str) -> tuple[dict[str, Any], str | None]:
             "content": [{
                 "type": "input_text",
                 "text": (
-                    "Extrai os dados de um pedido para proposta de diagnóstico de engenharia. "
+                "Extrai os dados de um pedido para proposta de diagnóstico de engenharia. "
+                    "Separa os dados da empresa cliente dos dados de quem assina ou envia a mensagem; "
+                    "nunca uses automaticamente o email de assinatura como email da empresa cliente. "
                     "Não inventes factos: usa null quando não houver evidência. Mantém o idioma "
                     "original e assinala dados em falta. Texto do pedido:\n\n" + text[:50000]
                 ),
@@ -159,19 +179,35 @@ async def analyze_with_openai(text: str) -> tuple[dict[str, Any], str | None]:
         return {}, "A análise OpenAI falhou; foram usados campos básicos."
 
 
-async def create_client(token: str, owner_id: str, name: str | None, email: str | None) -> str | None:
+async def create_client(token: str, owner_id: str, fields: dict[str, Any]) -> str | None:
+    name = fields.get("client_name")
     if not name:
         return None
-    found = []
-    if email:
-        found = await rest(token, "clients", params={
-            "select": "id", "owner_id": f"eq.{owner_id}", "email": f"eq.{email}", "limit": "1",
-        })
+    found: list[dict[str, Any]] = []
+    tax_id = fields.get("client_tax_id")
+    email = fields.get("client_email")
+    for column, value in (("tax_id", tax_id), ("email", email)):
+        if value and not found:
+            found = await rest(token, "clients", params={
+                "select": "id", "owner_id": f"eq.{owner_id}", column: f"eq.{value}", "limit": "1",
+            })
+    client_data = {
+        "name": name,
+        "email": email or None,
+        "phone": fields.get("client_phone") or None,
+        "organization": name,
+        "tax_id": tax_id or None,
+        "address": fields.get("client_address") or None,
+        "contact_name": fields.get("client_contact_name") or None,
+        "contact_role": fields.get("client_contact_role") or None,
+        "contact_email": fields.get("client_contact_email") or None,
+    }
     if found:
+        update_data = {key: value for key, value in client_data.items() if value not in (None, "")}
         rows = await rest(token, "clients", method="PATCH", params={"id": f"eq.{found[0]['id']}"},
-                          body={"name": name}, prefer="return=representation")
+                          body=update_data, prefer="return=representation")
         return rows[0]["id"]
-    rows = await rest(token, "clients", method="POST", body={"owner_id": owner_id, "name": name, "email": email},
+    rows = await rest(token, "clients", method="POST", body={"owner_id": owner_id, **client_data},
                       prefer="return=representation")
     return rows[0]["id"]
 
@@ -226,10 +262,16 @@ async def analyze_request(
               "deadline": deadline.strip()}
     analysis, analysis_error = await analyze_with_openai(content)
     result = fallback_analysis(content, fields)
+    parsed = parse_email_request(content)
     mode = "RULES"
     if analysis:
         result.update({key: value for key, value in analysis.items() if value is not None})
         mode = "OPENAI"
+    # Email labels are deterministic and must override ambiguous model guesses,
+    # particularly where the customer's address and sender's signature differ.
+    result.update({key: value for key, value in parsed.items() if value not in (None, "", [])})
+    if not parsed.get("client_email") and parsed.get("sender_email") == result.get("client_email"):
+        result["client_email"] = None
     for key, value in fields.items():
         if value:
             result[key] = value
@@ -247,7 +289,7 @@ async def analyze_request(
         except (TypeError, ValueError):
             result["deadline"] = None
 
-    client_id = await create_client(user.token, user.id, result.get("client_name"), result.get("client_email"))
+    client_id = await create_client(user.token, user.id, result)
     project_id = None
     project_name_value = result.get("project_name")
     if project_name_value:
@@ -261,7 +303,7 @@ async def analyze_request(
     status = "NEEDS_INFORMATION" if result.get("missing_information") else "DRAFT"
     request_rows = await rest(user.token, "proposal_requests", method="POST", body={
         "owner_id": user.id, "client_id": client_id, "project_id": project_id,
-        "title": title[:300], "source": "upload" if file else "email", "raw_text": content,
+        "title": title[:300], "source": "upload" if file else "email" if looks_like_email(content) else "chat", "raw_text": content,
         "extracted_fields": result, "deadline": result.get("deadline"), "status": status,
     }, prefer="return=representation")
     request_row = request_rows[0]
@@ -360,7 +402,10 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
                                 user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
     allowed = {"client_name", "client_email", "project_name", "location", "construction_year",
                "basement_count", "objective", "deadline", "categories", "constraints",
-               "missing_information"}
+               "missing_information", "client_tax_id", "client_address", "client_phone",
+               "client_contact_name", "client_contact_role", "client_contact_email",
+               "source_subject", "sender_name", "sender_role", "sender_organization",
+               "sender_email", "sender_phone", "requested_services", "requested_conditions"}
     if set(update.fields) - allowed:
         raise HTTPException(422, "O pedido contém campos desconhecidos.")
     current = await rest(user.token, "proposal_requests", params={"id": f"eq.{request_id}",
@@ -385,14 +430,7 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
         except ValueError as exc:
             raise HTTPException(422, "O prazo tem de ser uma data válida.") from exc
 
-    client_id = request_row.get("client_id")
-    if fields.get("client_name"):
-        if client_id:
-            await rest(user.token, "clients", method="PATCH", params={"id": f"eq.{client_id}"},
-                body={"name": fields.get("client_name"), "email": fields.get("client_email") or None},
-                prefer="return=minimal")
-        else:
-            client_id = await create_client(user.token, user.id, fields.get("client_name"), fields.get("client_email"))
+    client_id = await create_client(user.token, user.id, fields) or request_row.get("client_id")
 
     project_id = request_row.get("project_id")
     year = fields.get("construction_year")
@@ -473,6 +511,45 @@ async def generate_proposal(request_id: str,
     result = await rest(user.token, "rpc/create_proposal_for_request", method="POST",
                         body={"p_request_id": request_id})
     row = result[0] if isinstance(result, list) else result
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "owner_id,extracted_fields", "limit": "1",
+    })
+    current_items = await rest(user.token, "proposal_items", params={
+        "proposal_id": f"eq.{row['proposal_id']}", "select": "service_id,position",
+    })
+    if request_rows:
+        extracted = request_rows[0].get("extracted_fields") or {}
+        requested = " ".join(extracted.get("requested_services") or []).casefold()
+        service_matches = (
+            ("ELEC_INSPECT", ("inspeção", "inspeccao", "inspecionar")),
+            ("ELEC_CONTINUITY", ("continuidade",)),
+            ("ELEC_INSULATION", ("isolamento",)),
+            ("ELEC_LOAD", ("carga", "sobrecarga")),
+            ("ELEC_REPORT", ("relatório", "relatorio", "recomendações", "recomendacoes")),
+        )
+        matched_ids = [service_id for service_id, words in service_matches if any(word in requested for word in words)]
+        if matched_ids:
+            services = await rest(user.token, "services", params={
+                "service_id": f"in.({','.join(matched_ids)})", "active": "eq.true", "select": "service_id,name,unit,technical_basis",
+            })
+            service_by_id = {service["service_id"]: service for service in services}
+            new_items = []
+            existing_service_ids = {item["service_id"] for item in current_items if item.get("service_id")}
+            next_position = max((int(item.get("position") or 0) for item in current_items), default=0) + 1
+            for service_id in matched_ids:
+                if service_id in existing_service_ids:
+                    continue
+                service = service_by_id.get(service_id)
+                if not service:
+                    continue
+                new_items.append({
+                    "owner_id": user.id, "proposal_id": row["proposal_id"], "service_id": service_id,
+                    "name": service["name"], "unit": service["unit"], "quantity": 1,
+                    "unit_price": 0, "origin": "SUGGESTED", "technical_basis": service.get("technical_basis"),
+                    "position": next_position + len(new_items),
+                })
+            if new_items:
+                await rest(user.token, "proposal_items", method="POST", body=new_items, prefer="return=minimal")
     return {"id": row["proposal_id"], "proposal_no": row["proposal_no"]}
 
 

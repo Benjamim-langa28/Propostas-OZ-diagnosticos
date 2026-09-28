@@ -18,6 +18,7 @@ Os ficheiros do sistema anterior estão guardados em [`legacy/`](legacy/). A apl
 2. Na raiz do projeto, autentica o CLI, liga-o ao project ref novo e aplica as migrações:
 
    ```powershell
+   npm install
    npx supabase login
    npx supabase link --project-ref kaeuqjqtknuuldstmcbd
    npx supabase db push --dry-run
@@ -93,10 +94,13 @@ Abre [http://localhost:3000](http://localhost:3000). A documentação interativa
 
 - Registo e início de sessão com Supabase Auth.
 - Registo de pedidos a partir de texto, email colado ou anexo PDF/DOCX/XLSX/TXT/CSV/EML; os originais ficam num bucket privado e o texto extraído no pedido.
-- Extração estruturada por OpenAI com alternativa básica sem IA e indicação dos campos em falta.
+- Extração em Python do assunto, empresa cliente, NIF/NUIT, endereço, telefone, email, obra, localização, objetivo, âmbito e assinatura do remetente; a empresa cliente fica separada de quem enviou o email.
+- Extração estruturada por OpenAI com alternativa por regras sem chave de IA e indicação dos campos em falta.
 - Revisão e gravação dos dados extraídos, estado do pedido, agenda de visitas e acesso aos anexos privados.
 - Criação numerada de proposta, catálogo de serviços, quantidades, preços, IVA e totais.
 - Geração e transferência de PDF, versões imutáveis da proposta e estados de aprovação/envio.
+- Sugestões de serviços elétricos a partir do âmbito do email, com preço zero até validação técnica.
+- Biblioteca de propostas: pesquisa de propostas geradas, carregamento de propostas antigas e consulta de referências semelhantes. Os ficheiros carregados ficam privados e não são partilhados entre utilizadores.
 - Envio manual pelo Resend após aprovação, com o PDF gerado anexado automaticamente.
 - Consulta da base técnica de patologias, causas, ensaios e soluções.
 

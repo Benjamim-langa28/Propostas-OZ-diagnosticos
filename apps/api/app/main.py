@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.knowledge import router as knowledge_router
 from app.proposals import router as proposals_router
+from app.proposal_library import router as proposal_library_router
 
 app = FastAPI(title="OZ Proposal API", version="0.1.0")
 app.add_middleware(
@@ -14,4 +15,5 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(proposals_router)
+app.include_router(proposal_library_router)
 app.include_router(knowledge_router)

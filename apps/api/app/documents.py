@@ -1,7 +1,9 @@
 import csv
+from email import policy
 import io
 import unicodedata
 from io import BytesIO
+from email.parser import BytesParser
 
 import fitz
 from docx import Document
@@ -81,7 +83,30 @@ async def extract_upload(file: UploadFile) -> str:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "O anexo excede o limite de 15 MB.")
     name = (file.filename or "anexo").lower()
-    if name.endswith((".txt", ".csv", ".eml")):
+    if name.endswith(".eml"):
+        try:
+            message = BytesParser(policy=policy.default).parsebytes(data)
+            body_parts = []
+            if message.is_multipart():
+                for part in message.walk():
+                    if part.get_content_type() == "text/plain" and not part.get_filename():
+                        body_parts.append(part.get_content())
+            elif message.get_content_type() == "text/plain":
+                body_parts.append(message.get_content())
+            body = "\n\n".join(str(part) for part in body_parts if part).strip()
+            if not body:
+                raise HTTPException(422, "O email .eml não contém texto legível.")
+            subject = str(message.get("subject") or "").strip()
+            sender = str(message.get("from") or "").strip()
+            headers = []
+            if subject:
+                headers.append(f"Assunto: {subject}")
+            if sender:
+                headers.append(f"De: {sender}")
+            return "\n".join(headers) + ("\n\n" if headers else "") + body
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(422, "Não foi possível interpretar este email .eml.") from exc
+    if name.endswith((".txt", ".csv")):
         return data.decode("utf-8", errors="replace")
     if name.endswith(".pdf") or file.content_type == "application/pdf":
         try:

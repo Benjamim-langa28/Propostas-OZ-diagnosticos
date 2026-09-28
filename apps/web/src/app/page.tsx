@@ -23,11 +23,17 @@ type Detail = {
   mqt_items: Array<{ id: string; code?: string | null; description: string; unit: string; quantity: number }>;
 };
 type Knowledge = Record<string, Array<Record<string, any>>>;
+type ProposalReference = {
+  source: "uploaded" | "generated"; id: string; request_id?: string | null; proposal_no?: string | null;
+  title: string; client_name?: string | null; location?: string | null; summary?: string | null;
+  file_name?: string | null; created_at: string; match_score?: number;
+};
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
-type BrowserGlobal = typeof globalThis & { __ozSupabaseClient?: ReturnType<typeof createClient> };
+type SupabaseAppClient = ReturnType<typeof createClient<any, "public", "public">>;
+type BrowserGlobal = typeof globalThis & { __ozSupabaseClient?: SupabaseAppClient };
 
 function getSupabaseClient() {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
@@ -45,11 +51,24 @@ const STATUS_LABEL: Record<string, string> = {
   REJECTED: "Recusada", EXPIRED: "Expirada",
 };
 const STATUSES = Object.keys(STATUS_LABEL);
-const FIELDS: Array<[string, string, string]> = [
-  ["client_name", "Cliente", "text"], ["client_email", "Email do cliente", "email"],
-  ["project_name", "Obra / projeto", "text"], ["location", "Localização", "text"],
-  ["construction_year", "Ano de construção", "number"], ["basement_count", "N.º de caves", "number"],
-  ["deadline", "Prazo pretendido", "date"], ["objective", "Objetivo do pedido", "textarea"],
+const FIELDS: Array<[string, string, string, string]> = [
+  ["client_name", "Empresa cliente", "text", "cliente"], ["client_tax_id", "NIF / NUIT", "text", "cliente"],
+  ["client_email", "Email da empresa cliente", "email", "cliente"], ["client_phone", "Telefone da empresa cliente", "tel", "cliente"],
+  ["client_address", "Endereço da empresa cliente", "textarea", "cliente"],
+  ["client_contact_name", "Pessoa de contacto do cliente", "text", "cliente"],
+  ["client_contact_role", "Função do contacto", "text", "cliente"],
+  ["client_contact_email", "Email do contacto", "email", "cliente"],
+  ["project_name", "Obra / projeto", "text", "obra"], ["location", "Localização da obra", "text", "obra"],
+  ["construction_year", "Ano de construção", "number", "obra"], ["basement_count", "N.º de caves", "number", "obra"],
+  ["deadline", "Prazo pretendido", "date", "obra"], ["objective", "Objetivo do pedido", "textarea", "obra"],
+  ["requested_services", "Serviços pedidos", "textarea", "obra"],
+  ["requested_conditions", "Condições comerciais pedidas", "textarea", "obra"],
+  ["source_subject", "Assunto original", "text", "remetente"],
+  ["sender_name", "Nome do remetente", "text", "remetente"],
+  ["sender_role", "Função do remetente", "text", "remetente"],
+  ["sender_organization", "Organização do remetente", "text", "remetente"],
+  ["sender_email", "Email do remetente", "email", "remetente"],
+  ["sender_phone", "Telefone do remetente", "tel", "remetente"],
 ];
 
 async function api<T>(token: string, path: string, options: RequestInit = {}): Promise<T> {
@@ -87,7 +106,7 @@ function displayDate(value?: string | null) {
 export default function Home() {
   const supabase = getSupabaseClient();
   const [session, setSession] = useState<Session | null>(null);
-  const [page, setPage] = useState<"dashboard" | "new" | "detail" | "knowledge">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "new" | "detail" | "knowledge" | "library">("dashboard");
   const [requests, setRequests] = useState<ProposalRequest[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -134,6 +153,8 @@ export default function Home() {
 
   if (!supabase) return <SetupPage />;
   if (!session) return <AuthPage supabase={supabase} />;
+  const authClient = supabase;
+  const accessToken = session.access_token;
 
   const filtered = requests.filter((request) => {
     const fields = request.extracted_fields ?? {};
@@ -148,18 +169,17 @@ export default function Home() {
   };
 
   async function logout() {
-    await supabase.auth.signOut();
+    await authClient.auth.signOut();
     setPage("dashboard");
   }
 
   async function afterSave(id?: string) {
-    if (!session.access_token) return;
-    await loadRequests(session.access_token);
+    await loadRequests(accessToken);
     if (id) {
       setSelectedId(id);
       setDetail(null);
       setPage("detail");
-      await loadDetail(session.access_token, id);
+      await loadDetail(accessToken, id);
     } else setPage("dashboard");
   }
 
@@ -172,6 +192,7 @@ export default function Home() {
           <button className={page === "dashboard" || page === "detail" ? "nav-item active" : "nav-item"} onClick={() => setPage("dashboard")}><span>▦</span> Pedidos e propostas</button>
           <button className={page === "new" ? "nav-item active" : "nav-item"} onClick={() => { setError(""); setPage("new"); }}><span>＋</span> Novo pedido</button>
           <button className={page === "knowledge" ? "nav-item active" : "nav-item"} onClick={() => { setError(""); setPage("knowledge"); }}><span>⌕</span> Base técnica</button>
+          <button className={page === "library" ? "nav-item active" : "nav-item"} onClick={() => { setError(""); setPage("library"); }}><span>▤</span> Propostas anteriores</button>
         </nav>
         <div className="sidebar-bottom">
           <div className="safety-note"><span className="safety-icon">✳</span><div><b>A IA sugere.</b><br />O engenheiro valida.</div></div>
@@ -180,16 +201,17 @@ export default function Home() {
       </aside>
 
       <main className="main-area">
-        <header className="topbar"><div className="crumb">OZ <span>/</span> {page === "dashboard" ? "Pedidos e propostas" : page === "new" ? "Novo pedido" : page === "knowledge" ? "Base técnica" : "Proposta"}</div><div className="topbar-right"><span className="secure-label"><i /> Espaço privado</span><button className="icon-button" title="Atualizar" onClick={() => void loadRequests(session.access_token)}>↻</button></div></header>
+        <header className="topbar"><div className="crumb">OZ <span>/</span> {page === "dashboard" ? "Pedidos e propostas" : page === "new" ? "Novo pedido" : page === "knowledge" ? "Base técnica" : page === "library" ? "Propostas anteriores" : "Proposta"}</div><div className="topbar-right"><span className="secure-label"><i /> Espaço privado</span><button className="icon-button" title="Atualizar" onClick={() => void loadRequests(session.access_token)}>↻</button></div></header>
         <div className="content">
           {error && <div className="alert alert-error" role="alert"><span>!</span>{error}<button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="alert alert-success" role="status"><span>✓</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
           {page === "dashboard" && <Dashboard metrics={metrics} requests={filtered} query={query} setQuery={setQuery} openDetail={openDetail} loading={loading} create={() => setPage("new")} />}
           {page === "new" && <NewRequest token={session.access_token} onCancel={() => setPage("dashboard")} onCreated={(id, warning) => { if (warning) setNotice(warning); void afterSave(id); }} />}
-          {page === "detail" && <RequestDetail token={session.access_token} detail={detail} loading={loading} onRefresh={() => selectedId && void loadDetail(session.access_token, selectedId)} onBack={() => setPage("dashboard")} setError={setError} setNotice={setNotice} />}
+          {page === "detail" && <RequestDetail token={session.access_token} detail={detail} loading={loading} onRefresh={() => selectedId && void loadDetail(session.access_token, selectedId)} onBack={() => setPage("dashboard")} onOpenRequest={openDetail} setError={setError} setNotice={setNotice} />}
           {page === "detail" && detail?.proposal && <ProposalPdfDownload token={session.access_token} requestId={detail.request.id} setError={setError} />}
           {page === "detail" && detail && detail.mqt_items.length > 0 && <MqtPanel token={session.access_token} detail={detail} refresh={() => selectedId && void loadDetail(session.access_token, selectedId)} setError={setError} setNotice={setNotice} />}
           {page === "knowledge" && <KnowledgePage token={session.access_token} />}
+          {page === "library" && <ProposalLibraryPage token={session.access_token} onOpen={openDetail} onNew={() => setPage("new")} />}
         </div>
       </main>
     </div>
@@ -200,7 +222,7 @@ function SetupPage() {
   return <main className="setup-wrap"><section className="setup-card"><span className="brand-mark large">OZ</span><p className="eyebrow">OZ INTELLIGENT PROPOSAL</p><h1>A tua área de propostas<br />está quase pronta.</h1><p className="setup-copy">Falta ligar o novo projeto Supabase. Cria o projeto na conta nova e depois preenche os valores do projeto no ficheiro de ambiente do frontend.</p><div className="setup-steps"><div><b>01</b><span>Criar um projeto Supabase novo</span></div><div><b>02</b><span>Copiar URL e chave publicável para <code>apps/web/.env.local</code></span></div><div><b>03</b><span>Configurar a mesma URL e chave em <code>apps/api/.env</code></span></div></div><div className="setup-callout"><b>Não uses a chave secreta no browser.</b><br />OpenAI e Resend ficam apenas no ambiente do servidor Python.</div></section></main>;
 }
 
-function AuthPage({ supabase }: { supabase: ReturnType<typeof createClient> }) {
+function AuthPage({ supabase }: { supabase: SupabaseAppClient }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -264,8 +286,8 @@ function NewRequest({ token, onCancel, onCreated }: { token: string; onCancel: (
   </>;
 }
 
-function RequestDetail({ token, detail, loading, onRefresh, onBack, setError, setNotice }: {
-  token: string; detail: Detail | null; loading: boolean; onRefresh: () => void; onBack: () => void; setError: (s: string) => void; setNotice: (s: string) => void;
+function RequestDetail({ token, detail, loading, onRefresh, onBack, onOpenRequest, setError, setNotice }: {
+  token: string; detail: Detail | null; loading: boolean; onRefresh: () => void; onBack: () => void; onOpenRequest: (id: string) => void; setError: (s: string) => void; setNotice: (s: string) => void;
 }) {
   const [fields, setFields] = useState<Record<string, any>>({});
   const [services, setServices] = useState<Service[]>([]);
@@ -276,14 +298,29 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, setError, se
   const [visitDate, setVisitDate] = useState("");
   const [visitNote, setVisitNote] = useState("");
   const [versions, setVersions] = useState<Array<{ id: string; version: number; created_at: string }>>([]);
+  const [references, setReferences] = useState<ProposalReference[]>([]);
   const [busy, setBusy] = useState(false);
   const [savingFields, setSavingFields] = useState(false);
 
   useEffect(() => {
     if (!detail) return;
-    setFields(detail.request.extracted_fields ?? {});
+    const extracted = detail.request.extracted_fields ?? {};
+    setFields({ ...extracted,
+      requested_services: Array.isArray(extracted.requested_services) ? extracted.requested_services.join("\n") : extracted.requested_services ?? "",
+      requested_conditions: Array.isArray(extracted.requested_conditions) ? extracted.requested_conditions.join("\n") : extracted.requested_conditions ?? "",
+    });
     setEmailTo(detail.request.extracted_fields?.client_email ?? "");
   }, [detail]);
+  useEffect(() => {
+    if (!detail) return;
+    const extracted = detail.request.extracted_fields ?? {};
+    const searchText = [
+      ...(extracted.categories ?? []), ...(extracted.requested_services ?? []), extracted.objective,
+      extracted.location,
+    ].filter(Boolean).join(" ").slice(0, 300);
+    void api<ProposalReference[]>(token, `/api/proposal-library?query=${encodeURIComponent(searchText)}&limit=4`)
+      .then(setReferences).catch(() => setReferences([]));
+  }, [token, detail?.request.id]);
   useEffect(() => { void api<Service[]>(token, "/api/services").then(setServices).catch((e) => setError((e as Error).message)); }, [token, setError]);
   useEffect(() => {
     if (!detail?.proposal) { setVersions([]); return; }
@@ -300,6 +337,11 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, setError, se
     setSavingFields(true); setError("");
     const normalized = { ...fields };
     for (const key of ["construction_year", "basement_count"]) normalized[key] = normalized[key] === "" || normalized[key] == null ? null : Number(normalized[key]);
+    for (const key of ["requested_services", "requested_conditions"]) {
+      normalized[key] = typeof normalized[key] === "string"
+        ? normalized[key].split(/\r?\n/).map((item: string) => item.trim()).filter(Boolean)
+        : normalized[key] ?? [];
+    }
     if (!normalized.deadline) normalized.deadline = null;
     try { await api(token, `/api/proposals/${detail.request.id}/fields`, { method: "PATCH", body: JSON.stringify({ fields: normalized }) }); setNotice("Dados do pedido guardados."); onRefresh(); }
     catch (e) { setError((e as Error).message); }
@@ -362,7 +404,8 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, setError, se
   return <>
     <section className="detail-heading"><button className="back-button" onClick={onBack}>←</button><div className="detail-title"><p className="eyebrow">PEDIDO DE PROPOSTA</p><h1>{fields.project_name || detail.request.title}</h1><p>{fields.client_name || "Cliente por identificar"}{fields.location ? ` · ${fields.location}` : ""}</p></div><div className="detail-tools"><span className={statusClass(detail.request.status)}><i />{STATUS_LABEL[detail.request.status] ?? detail.request.status}</span><button className="icon-button" onClick={onRefresh} title="Atualizar">↻</button></div></section>
     <div className="detail-grid"><div className="detail-main-column">
-      <section className="panel detail-panel"><div className="panel-heading"><div><h2>Dados extraídos</h2><p>Confirma os campos sugeridos antes de gerar a proposta.</p></div><span className={`mode-tag mode-${detail.analysis?.analysis_mode?.toLowerCase() ?? "rules"}`}>{detail.analysis?.analysis_mode === "OPENAI" ? "✳ OpenAI" : "↗ Regras básicas"}</span></div>{allMissing.length > 0 && <div className="missing-banner"><span>!</span><div><b>Informação por confirmar</b><p>{allMissing.join(" · ")}</p></div></div>}<div className="detail-fields">{FIELDS.map(([key, label, type]) => <label key={key} className={type === "textarea" ? "wide-field" : ""}>{label}{type === "textarea" ? <textarea rows={3} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} /> : <input type={type} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} />}</label>)}</div>{(fields.categories ?? []).length > 0 && <div className="category-line"><span>Categorias sugeridas</span>{(fields.categories ?? []).map((category: string) => <span className="category-chip" key={category}>{category}</span>)}</div>}<div className="panel-bottom"><span className="helper-copy">A análise automática é uma sugestão.</span><button className="secondary" onClick={persistFields} disabled={savingFields}>{savingFields ? "A guardar…" : "Guardar dados"}</button></div></section>
+      <section className="panel detail-panel"><div className="panel-heading"><div><h2>Dados extraídos</h2><p>Confirma os campos sugeridos antes de gerar a proposta.</p></div><span className={`mode-tag mode-${detail.analysis?.analysis_mode?.toLowerCase() ?? "rules"}`}>{detail.analysis?.analysis_mode === "OPENAI" ? "✳ OpenAI" : "↗ Regras básicas"}</span></div>{allMissing.length > 0 && <div className="missing-banner"><span>!</span><div><b>Informação por confirmar</b><p>{allMissing.join(" · ")}</p></div></div>}{[["cliente", "DADOS DA EMPRESA CLIENTE"], ["obra", "PEDIDO E OBRA"], ["remetente", "ASSINATURA DO REMETENTE"]].map(([group, heading]) => <section className="field-group" key={group}><h3>{heading}</h3><div className="detail-fields">{FIELDS.filter(([, , , fieldGroup]) => fieldGroup === group).map(([key, label, type]) => <label key={key} className={type === "textarea" ? "wide-field" : ""}>{label}{type === "textarea" ? <textarea rows={3} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} /> : <input type={type} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} />}</label>)}</div></section>)}{(fields.categories ?? []).length > 0 && <div className="category-line"><span>Categorias sugeridas</span>{(fields.categories ?? []).map((category: string) => <span className="category-chip" key={category}>{category}</span>)}</div>}<div className="panel-bottom"><span className="helper-copy">A análise automática é uma sugestão.</span><button className="secondary" onClick={persistFields} disabled={savingFields}>{savingFields ? "A guardar…" : "Guardar dados"}</button></div></section>
+      {references.length > 0 && <section className="panel prior-reference-panel"><div className="panel-heading"><div><h2>Referências anteriores</h2><p>Propostas e documentos semelhantes para consulta.</p></div><span className="count-pill">{references.length} resultados</span></div><div className="prior-reference-list">{references.map((reference) => <article className="prior-reference-row" key={`${reference.source}-${reference.id}`}><div><span className="reference-source">{reference.source === "uploaded" ? "ARQUIVO" : "PROPOSTA GERADA"}{reference.proposal_no ? ` · ${reference.proposal_no}` : ""}</span><b>{reference.title}</b><small>{[reference.client_name, reference.location].filter(Boolean).join(" · ") || "Sem cliente/localização identificados"}</small>{reference.summary && <p>{reference.summary}</p>}</div>{reference.source === "uploaded" ? <button className="secondary" onClick={async () => { try { const result = await api<{ url: string }>(token, `/api/proposal-library/${reference.id}/download`); window.open(result.url, "_blank", "noopener,noreferrer"); } catch (e) { setError((e as Error).message); } }}>Consultar</button> : <button className="secondary" onClick={() => reference.request_id && onOpenRequest(reference.request_id)}>Abrir</button>}</article>)}</div></section>}
       <section className="panel detail-panel"><div className="panel-heading"><div><h2>Âmbito e preços</h2><p>Os preços de catálogo servem de ponto de partida; revê quantidades e valores.</p></div>{detail.proposal ? <span className="proposal-no">{detail.proposal.proposal_no}</span> : <button className="secondary" onClick={generate} disabled={busy}>Criar proposta <span>→</span></button>}</div>{detail.proposal ? <><div className="service-add"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)}><option value="">Escolher um serviço…</option>{services.map((s) => <option key={s.service_id} value={s.service_id}>{s.category} · {s.name}</option>)}</select><input aria-label="Quantidade" type="number" min="0" step="0.1" value={quantity} onChange={(e) => setQuantity(e.target.value)} /><button className="secondary" onClick={addService} disabled={busy || !serviceId}>Adicionar</button></div>{detail.items.length ? <div className="table-scroll"><table className="items-table"><thead><tr><th>SERVIÇO</th><th>QTD.</th><th>PREÇO / UN.</th><th>TOTAL</th><th /></tr></thead><tbody>{detail.items.map((item) => <tr key={item.id}><td><label className="item-name"><input type="checkbox" checked={item.enabled} onChange={(e) => void updateItem(item.id, { enabled: e.target.checked })} /><span>{item.name}<small>{item.unit}</small></span></label></td><td><input className="number-input" type="number" min="0" step="0.1" defaultValue={item.quantity} onBlur={(e) => Number(e.target.value) !== Number(item.quantity) && void updateItem(item.id, { quantity: Number(e.target.value) })} /></td><td><input className="number-input price-input" type="number" min="0" step="0.01" defaultValue={item.unit_price} onBlur={(e) => Number(e.target.value) !== Number(item.unit_price) && void updateItem(item.id, { unit_price: Number(e.target.value) })} /></td><td>{money(Number(item.quantity) * Number(item.unit_price))}</td><td><button className="remove-button" title="Remover" onClick={() => void removeItem(item.id)}>×</button></td></tr>)}</tbody></table></div> : <div className="small-empty">Ainda não foram adicionados serviços.</div>}<div className="totals"><span>Subtotal <b>{money(total)}</b></span><span>IVA ({detail.proposal.vat_rate}%) <b>{money(vat)}</b></span><strong>Total <b>{money(total + vat)}</b></strong></div><div className="proposal-actions"><div className="proposal-button-group"><button className="secondary" onClick={() => window.print()}>Imprimir / Guardar PDF</button><button className="secondary" onClick={saveVersion} disabled={busy}>Guardar versão v{(versions[0]?.version ?? 0) + 1}</button></div><label className="status-select">Estado<select value={detail.proposal.status} onChange={(e) => void changeStatus(e.target.value)} disabled={busy}>{STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}</select></label></div>{versions.length > 0 && <div className="version-line">Última versão: <b>v{versions[0].version}</b> · {displayDate(versions[0].created_at)}</div>}{detail.proposal.status === "APPROVED" && <div className="send-box"><div><b>Enviar por email</b><small>O PDF da proposta será anexado automaticamente ao email.</small></div><input type="email" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="email@cliente.pt" /><textarea rows={2} value={emailMessage} onChange={(e) => setEmailMessage(e.target.value)} placeholder="Mensagem opcional" /><button className="primary" onClick={sendEmail} disabled={busy || !emailTo}>Enviar com Resend <span>→</span></button></div>}</> : <div className="generate-callout"><span>✳</span><p>Cria uma proposta para escolher serviços, confirmar os preços e preparar o documento final.</p></div>}</section>
       <section className="proposal-paper print-only"><div className="paper-brand"><span className="brand-mark">OZ</span><div><b>OZ</b><small>DIAGNÓSTICO E ENGENHARIA</small></div></div><div className="paper-ref">PROPOSTA DE SERVIÇOS<br /><b>{detail.proposal?.proposal_no ?? "Por gerar"}</b><br />{displayDate(new Date().toISOString())}</div><h2>{fields.project_name || detail.request.title}</h2><p>Exmo.(a) Senhor(a) {fields.client_name || ""},</p><p>Apresentamos a proposta para os serviços de diagnóstico e engenharia abaixo indicados.</p><table><thead><tr><th>Descrição</th><th>Quantidade</th><th>Preço unitário</th><th>Total</th></tr></thead><tbody>{detail.items.filter((item) => item.enabled).map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.quantity} {item.unit}</td><td>{money(item.unit_price)}</td><td>{money(item.quantity * item.unit_price)}</td></tr>)}</tbody></table><div className="paper-total">Subtotal: {money(total)}<br />IVA: {money(vat)}<br /><b>Total: {money(total + vat)}</b></div><p className="paper-placeholder">Prazo de execução, validade e condições comerciais a confirmar pelo engenheiro responsável.</p><div className="paper-sign">Com os melhores cumprimentos,<br /><br />OZ — Diagnóstico e Engenharia</div></section>
     </div><aside className="detail-side-column"><section className="panel side-panel"><p className="eyebrow">RESUMO</p><div className="side-stat"><span>Recebido</span><b>{displayDate(detail.request.created_at)}</b></div><div className="side-stat"><span>Prazo do cliente</span><b>{displayDate(detail.request.deadline)}</b></div><div className="side-stat"><span>Origem</span><b>{detail.request.source === "upload" ? "Anexo" : detail.request.source === "email" ? "Email" : "Manual"}</b></div><div className="side-stat"><span>Proposta</span><b>{detail.proposal?.proposal_no ?? "Ainda não criada"}</b></div>{detail.documents.length > 0 && <div className="side-documents"><span>Anexos originais</span>{detail.documents.map((document) => <button key={document.id} onClick={async () => { try { const result = await api<{ url: string }>(token, `/api/documents/${document.id}/download`); window.open(result.url, "_blank", "noopener,noreferrer"); } catch (e) { setError((e as Error).message); } }}>↗ {document.file_name}</button>)}</div>}</section><section className="panel side-panel visits-panel"><p className="eyebrow">VISITAS AO LOCAL</p><label>Data e hora<input type="datetime-local" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} /></label><label>Nota<input value={visitNote} onChange={(e) => setVisitNote(e.target.value)} placeholder="Contacto, acesso, observações" /></label><button className="secondary" onClick={scheduleVisit} disabled={busy || !visitDate}>Agendar visita</button>{detail.visits.length > 0 && <div className="visit-list">{detail.visits.map((visit) => <div className="visit-row" key={visit.id}><div><b>{new Date(visit.scheduled_at).toLocaleString("pt-PT", { dateStyle: "medium", timeStyle: "short" })}</b><small>{visit.note || "Sem observações"}</small></div><select aria-label="Estado da visita" value={visit.status} onChange={(e) => void updateVisitStatus(visit.id, e.target.value)}><option value="SCHEDULED">Agendada</option><option value="COMPLETED">Concluída</option><option value="CANCELLED">Cancelada</option></select></div>)}</div>}</section><section className="side-tip"><span>✳</span><div><b>Revisão técnica</b><p>Confirma âmbito, quantidades, preços, exclusões e prazo antes de aprovar.</p></div></section><section className="panel side-panel status-panel"><label className="eyebrow" htmlFor="request-status">ESTADO DO PEDIDO</label><select id="request-status" value={detail.request.status} onChange={(e) => void changeStatus(e.target.value)} disabled={busy}>{STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}</select><small>As alterações são guardadas no sistema.</small></section></aside></div>
@@ -422,4 +465,57 @@ function KnowledgePage({ token }: { token: string }) {
     { label: "Ensaios", rows: knowledge.tests }, { label: "Causas", rows: knowledge.causes }, { label: "Soluções", rows: knowledge.solutions },
   ] : [];
   return <><section className="welcome-row"><div><p className="eyebrow">CONSULTA TÉCNICA</p><h1>Base de conhecimento</h1><p className="subhead">Referências para apoiar a análise de patologias, ensaios e recomendações.</p></div><span className="count-pill">{knowledge ? pathologies.length + " patologias" : "A carregar…"}</span></section>{error && <div className="inline-error">{error}</div>}<section className="panel knowledge-panel"><div className="toolbar"><label className="search-box"><span>⌕</span><input placeholder="Pesquisar patologia, código ou grupo…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">Todos os grupos</option>{groups.map((name) => <option key={name}>{name}</option>)}</select></div>{!knowledge ? <div className="empty-state"><span className="loader" />A carregar a base técnica…</div> : <><div className="knowledge-grid">{pathologies.map((row) => <article className="knowledge-card" key={row.code}><div className="knowledge-card-top"><span>{row.code}</span>{row.not_in_manual && <span className="category-chip">Complementar</span>}</div><h3>{row.name}</h3><p>{row.group_name}</p><div className="severity-range">Severidade de referência <b>{row.sev_min}–{row.sev_max}</b></div></article>)}</div>{pathologies.length === 0 && <div className="empty-state">Não foram encontradas patologias.</div>}</>}</section>{knowledge && <div className="knowledge-reference-grid">{references.map(({ label, rows }) => <section className="panel ref-panel" key={label}><p className="eyebrow">CATÁLOGO</p><h2>{label}</h2>{rows.slice(0, 7).map((row) => <div className="ref-row" key={row.code}><b>{row.code}</b><span>{row.name}</span></div>)}<small>{rows.length} referências</small></section>)}</div>}</>;
+}
+
+function ProposalLibraryPage({ token, onOpen, onNew }: { token: string; onOpen: (id: string) => void; onNew: () => void }) {
+  const [query, setQuery] = useState("");
+  const [references, setReferences] = useState<ProposalReference[]>([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState("");
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const load = useCallback(async (search: string) => {
+    setWorking(true); setError("");
+    try {
+      const result = await api<ProposalReference[]>(token, `/api/proposal-library?query=${encodeURIComponent(search)}&limit=20`);
+      setReferences(result);
+    } catch (e) { setError((e as Error).message); }
+    finally { setWorking(false); }
+  }, [token]);
+  useEffect(() => { void load(""); }, [load]);
+
+  async function submitSearch(event: FormEvent) {
+    event.preventDefault(); await load(query.trim());
+  }
+  async function upload(event: FormEvent) {
+    event.preventDefault();
+    if (!file) return;
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const form = new FormData(); form.append("file", file); form.append("title", title);
+      await api(token, "/api/proposal-library", { method: "POST", body: form });
+      setFile(null); setTitle("");
+      const input = document.getElementById("proposal-library-file") as HTMLInputElement | null;
+      if (input) input.value = "";
+      setNotice("Proposta guardada na biblioteca privada e indexada para pesquisa.");
+      await load(query.trim());
+    } catch (e) { setError((e as Error).message); }
+    finally { setWorking(false); }
+  }
+  async function openReference(reference: ProposalReference) {
+    if (reference.source === "generated" && reference.request_id) { onOpen(reference.request_id); return; }
+    try {
+      const result = await api<{ url: string }>(token, `/api/proposal-library/${reference.id}/download`);
+      window.open(result.url, "_blank", "noopener,noreferrer");
+    } catch (e) { setError((e as Error).message); }
+  }
+
+  return <>
+    <section className="welcome-row"><div><p className="eyebrow">CONSULTA DE TRABALHOS ANTERIORES</p><h1>Biblioteca de propostas</h1><p className="subhead">Pesquisa propostas geradas e carrega documentos antigos para consulta privada.</p></div><button className="primary" onClick={onNew}>＋ Novo pedido</button></section>
+    {error && <div className="inline-error">{error}</div>}{notice && <div className="inline-success">{notice}</div>}
+    <section className="panel library-upload-panel"><div className="panel-heading"><div><h2>Adicionar proposta existente</h2><p>PDF, Word, Excel, TXT, CSV ou email até 15 MB.</p></div><span className="secure-label"><i /> Privado</span></div><form className="library-upload-form" onSubmit={upload}><label>Título de consulta (opcional)<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: Diagnóstico elétrico — edifício Matola" /></label><label className="upload-zone"><span className="upload-icon">↑</span><span><b>{file?.name ?? "Selecionar proposta anterior"}</b><small>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : "O ficheiro e o texto extraído ficam no teu espaço privado."}</small></span><input id="proposal-library-file" type="file" accept=".pdf,.docx,.xlsx,.txt,.csv,.eml" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><button className="secondary" disabled={working || !file}>{working ? "A guardar…" : "Adicionar à biblioteca"}</button></form></section>
+    <section className="panel proposal-library-results"><div className="panel-heading"><div><h2>Pesquisar referências</h2><p>Inclui ficheiros carregados e propostas já geradas neste espaço.</p></div><span className="count-pill">{references.length} resultados</span></div><form className="toolbar" onSubmit={submitSearch}><label className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Pesquisar serviço, cliente, localização ou texto…" /></label><button className="secondary" disabled={working}>{working ? "A pesquisar…" : "Pesquisar"}</button></form>{working && !references.length ? <div className="empty-state"><span className="loader" />A pesquisar a biblioteca…</div> : references.length ? <div className="prior-reference-list library-reference-list">{references.map((reference) => <article className="prior-reference-row" key={`${reference.source}-${reference.id}`}><div><span className="reference-source">{reference.source === "uploaded" ? "FICHEIRO CARREGADO" : "PROPOSTA GERADA"}{reference.proposal_no ? ` · ${reference.proposal_no}` : ""}</span><b>{reference.title}</b><small>{[reference.client_name, reference.location, displayDate(reference.created_at)].filter(Boolean).join(" · ")}</small>{reference.summary && <p>{reference.summary}</p>}</div><button className="secondary" onClick={() => void openReference(reference)}>{reference.source === "uploaded" ? "Abrir ficheiro" : "Abrir proposta"}</button></article>)}</div> : <div className="empty-state"><div className="empty-icon">▤</div><h3>{query ? "Sem referências encontradas" : "A biblioteca está vazia"}</h3><p>{query ? "Tenta outros termos ou carrega um documento de proposta." : "As propostas geradas aparecem aqui automaticamente. Também podes carregar propostas anteriores."}</p></div>}</section>
+  </>;
 }
