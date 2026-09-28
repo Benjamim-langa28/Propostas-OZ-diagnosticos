@@ -270,6 +270,14 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
 .prior-reference-row > div > p { display: -webkit-box; overflow: hidden; margin: 1px 0 0; color: #77867c; font-size: 9px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .prior-reference-row > .secondary { min-height: 31px; flex: 0 0 auto; font-size: 9px; }
 .reference-source { color: #78a084; font: 700 8px Manrope, sans-serif; letter-spacing: .1em; }
+.prior-reference-row > .reference-copy { gap: 5px; }
+.match-breakdown { color: #778b7c !important; font-size: 8px !important; }
+.match-track { height: 4px; overflow: hidden; margin-top: 1px; border-radius: 6px; background: #edf1eb; }
+.match-track > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8dbb8b, #2b7859); }
+.reference-score { flex: 0 0 76px !important; align-items: center; justify-content: center; gap: 2px !important; padding: 8px 5px; border: 1px solid #e4eee3; border-radius: 8px; background: #f6faf4; }
+.reference-score strong { color: #2f7153; font: 700 19px/1 Manrope, sans-serif; letter-spacing: -.04em; }
+.reference-score span { color: #8a9b8e; font-size: 7px; }
+.similarity-note { padding: 11px 22px 14px; border-top: 1px solid #eff1ed; color: #98a39a; font-size: 8px; line-height: 1.5; }
 .library-reference-list { padding-top: 1px; }
 .prior-reference-panel { margin-top: 15px; }
 .prior-reference-panel .prior-reference-list { padding-top: 1px; }
@@ -418,6 +426,9 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
   .prior-reference-list { padding-right: 15px; padding-left: 15px; }
   .prior-reference-row { align-items: flex-start; }
   .prior-reference-row > .secondary { min-height: 30px; padding: 0 8px; }
+  .prior-reference-row > .reference-score { flex-basis: 61px !important; }
+  .reference-score strong { font-size: 16px; }
+  .similarity-note { padding-right: 15px; padding-left: 15px; }
   .field-group > h3 { margin-left: 15px; }
   .knowledge-panel .toolbar { align-items: stretch; flex-direction: column; }
   .knowledge-panel .toolbar > select { height: 35px; }
