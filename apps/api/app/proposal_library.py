@@ -7,7 +7,7 @@ import mimetypes
 import unicodedata
 from uuid import uuid4
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from app.auth import CurrentUser, current_user
 from app.documents import MAX_UPLOAD_BYTES, extract_upload
 from app.email_intake import looks_like_email, parse_email_request
-from app.storage import signed_document_url, upload_document
+from app.storage import delete_document, signed_document_url, upload_document
 from app.supabase_rest import rest
 
 router = APIRouter(prefix="/api/proposal-library", tags=["proposal library"])
@@ -53,10 +53,10 @@ def _metadata(filename: str, content: str, requested_title: str) -> dict[str, An
 @router.get("")
 async def search_proposal_library(
     query: str = Query(default="", max_length=300),
-    limit: int = Query(default=20, ge=1, le=20),
+    limit: int = Query(default=100, ge=1, le=500),
     user: CurrentUser = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    result = await rest(user.token, "rpc/search_proposal_references", method="POST", body={
+    result = await rest(user.token, "rpc/list_proposal_library", method="POST", body={
         "p_query": query.strip(), "p_limit": limit,
     })
     return result or []
@@ -224,6 +224,37 @@ async def upload_proposal_reference(
     except httpx.HTTPError as exc:
         raise HTTPException(502, "Não foi possível guardar esta proposta na biblioteca privada.") from exc
     return rows[0]
+
+
+@router.delete("/{record_id}")
+async def delete_proposal_reference(
+    record_id: str,
+    source: Literal["uploaded", "generated"] = Query(),
+    user: CurrentUser = Depends(current_user),
+) -> dict[str, Any]:
+    if source == "uploaded":
+        rows = await rest(user.token, "proposal_library", params={
+            "id": f"eq.{record_id}", "select": "id,storage_path", "limit": "1",
+        })
+        if not rows:
+            raise HTTPException(404, "Este ficheiro não foi encontrado na tua biblioteca.")
+        if rows[0].get("storage_path"):
+            await delete_document(user.token, rows[0]["storage_path"], bucket=BUCKET)
+        deleted = await rest(user.token, "proposal_library", method="DELETE", params={
+            "id": f"eq.{record_id}", "select": "id",
+        }, prefer="return=representation")
+    else:
+        rows = await rest(user.token, "proposals", params={
+            "id": f"eq.{record_id}", "select": "id,request_id,proposal_no", "limit": "1",
+        })
+        if not rows:
+            raise HTTPException(404, "Esta proposta não foi encontrada no teu espaço.")
+        deleted = await rest(user.token, "proposals", method="DELETE", params={
+            "id": f"eq.{record_id}", "select": "id",
+        }, prefer="return=representation")
+    if not deleted:
+        raise HTTPException(404, "O registo já não está disponível para apagar.")
+    return {"deleted": True, "source": source, "id": record_id}
 
 
 @router.get("/{record_id}/download")

@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["proposals"])
 STATUSES = {
     "DRAFT", "ANALYSING", "NEEDS_INFORMATION", "TECHNICAL_SCOPE", "PRICING",
     "TECHNICAL_REVIEW", "READY_FOR_APPROVAL", "APPROVED", "GENERATED", "SENT",
-    "CLIENT_REVIEW", "ACCEPTED", "REJECTED", "EXPIRED",
+    "CLIENT_REVIEW", "ACCEPTED", "REJECTED", "EXPIRED", "CANCELLED",
 }
 
 ANALYSIS_SCHEMA = {
@@ -508,12 +508,16 @@ async def list_services(user: CurrentUser = Depends(current_user)) -> list[dict[
 @router.post("/proposals/{request_id}/generate")
 async def generate_proposal(request_id: str,
                             user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status,extracted_fields", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de gerar uma proposta.")
     result = await rest(user.token, "rpc/create_proposal_for_request", method="POST",
                         body={"p_request_id": request_id})
     row = result[0] if isinstance(result, list) else result
-    request_rows = await rest(user.token, "proposal_requests", params={
-        "id": f"eq.{request_id}", "select": "owner_id,extracted_fields", "limit": "1",
-    })
     current_items = await rest(user.token, "proposal_items", params={
         "proposal_id": f"eq.{row['proposal_id']}", "select": "service_id,position",
     })
@@ -556,6 +560,13 @@ async def generate_proposal(request_id: str,
 @router.post("/proposals/{request_id}/items")
 async def add_item(request_id: str, item: ItemCreate,
                    user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de alterar os serviços.")
     proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
     if not proposals:
         raise HTTPException(409, "Gera uma proposta antes de adicionar serviços.")
@@ -580,6 +591,13 @@ async def add_item(request_id: str, item: ItemCreate,
 @router.post("/proposals/{request_id}/mqt-items/{mqt_item_id}/add")
 async def add_mqt_item(request_id: str, mqt_item_id: str,
                        user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de alterar os serviços.")
     proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
     if not proposals:
         raise HTTPException(409, "Gera a proposta antes de importar linhas da MQT.")

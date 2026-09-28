@@ -110,6 +110,8 @@ h1 { margin-bottom: 8px; font: 700 27px/1.2 Manrope, sans-serif; letter-spacing:
 .status-needs_information, .status-technical_review, .status-ready_for_approval { border-color: #f0e4cd; color: #966123; background: #fffaf0; }
 .status-needs_information i, .status-technical_review i, .status-ready_for_approval i { background: #d09844; }
 .status-rejected, .status-expired { border-color: #efdeda; color: #9e5145; background: #fff7f5; }
+.status-cancelled { border-color: #efdeda; color: #9e5145; background: #fff7f5; }
+.status-cancelled i { background: #b65d52; }
 .empty-state { display: flex; min-height: 240px; flex-direction: column; align-items: center; justify-content: center; padding: 35px 20px; color: #829087; text-align: center; font-size: 11px; }
 .empty-state h3 { margin: 8px 0 5px; color: #3b4b42; font: 700 14px Manrope, sans-serif; }
 .empty-state p { margin: 0 0 16px; color: #909a93; }
@@ -156,6 +158,8 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
 .detail-title h1 { overflow: hidden; margin: 0 0 4px; font-size: 22px; text-overflow: ellipsis; white-space: nowrap; }
 .detail-title > p:last-child { margin: 0; color: #89958d; font-size: 10px; }
 .detail-tools { display: flex; align-items: center; gap: 9px; }
+.cancel-request-button { min-height: 32px; padding: 0 10px; border: 1px solid #efddda; border-radius: 6px; color: #a04f43; background: #fffaf8; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.cancel-request-button:hover { border-color: #d9aaa3; background: #fff2ef; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 244px; gap: 17px; align-items: start; }
 .detail-main-column, .detail-side-column { display: grid; gap: 16px; min-width: 0; }
 .detail-panel { overflow: hidden; padding-bottom: 0; }
@@ -215,6 +219,7 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
 .generate-callout { display: flex; gap: 11px; align-items: flex-start; padding: 20px 22px; border-top: 1px solid #edf0eb; color: #7d8e82; background: #fbfcfa; font-size: 10px; }
 .generate-callout > span { color: #70a07b; font-size: 17px; }
 .generate-callout p { margin: 2px 0 0; }
+.cancelled-banner { margin: 0 22px 17px; padding: 11px 13px; border: 1px solid #efddda; border-radius: 5px; color: #99564d; background: #fff8f6; font-size: 10px; line-height: 1.5; }
 .side-panel { padding: 17px; }
 .side-panel .eyebrow { margin-bottom: 13px; }
 .side-stat { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-top: 1px solid #eff1ed; }
@@ -281,6 +286,25 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
 .library-reference-list { padding-top: 1px; }
 .prior-reference-panel { margin-top: 15px; }
 .prior-reference-panel .prior-reference-list { padding-top: 1px; }
+.catalog-toolbar { flex-wrap: wrap; }
+.catalog-toolbar > .search-box { min-width: 250px; }
+.catalog-toolbar > select { height: 35px; min-width: 138px; padding: 0 9px; border: 1px solid #e6eae4; border-radius: 5px; color: #718077; background: #fff; font-size: 9px; }
+.proposal-catalog-scroll { border-top: 1px solid #edf0eb; }
+.proposal-catalog-table { width: 100%; min-width: 1100px; border-collapse: collapse; }
+.proposal-catalog-table thead { border-bottom: 1px solid #edf0eb; background: #fbfcfa; }
+.proposal-catalog-table th { padding: 11px 12px; color: #99a39d; text-align: left; font-size: 8px; font-weight: 700; letter-spacing: .1em; white-space: nowrap; }
+.proposal-catalog-table td { max-width: 250px; padding: 12px; border-bottom: 1px solid #eff1ed; color: #748178; font-size: 9px; vertical-align: middle; }
+.proposal-catalog-table tbody tr:last-child td { border-bottom: 0; }
+.proposal-catalog-table td > b, .proposal-catalog-table td > small { display: block; }
+.proposal-catalog-table td > b { overflow: hidden; color: #42564a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.proposal-catalog-table td > small { overflow: hidden; max-width: 235px; margin-top: 4px; color: #98a39a; font-size: 8px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.proposal-catalog-table .catalog-proposal-no { color: #397452; font: 700 10px Manrope, sans-serif; }
+.catalog-imported-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid #e6eae4; border-radius: 20px; color: #758279; background: #fbfcfa; font-size: 9px; white-space: nowrap; }
+.catalog-imported-status i { width: 5px; height: 5px; border-radius: 50%; background: #98a69d; }
+.catalog-actions { display: flex; align-items: center; gap: 5px; }
+.catalog-actions .secondary, .catalog-actions .danger-button { min-height: 29px; padding: 0 8px; font-size: 8px; white-space: nowrap; }
+.danger-button { border: 1px solid #efddda; border-radius: 5px; color: #a04f43; background: #fffaf8; font-size: 10px; font-weight: 700; }
+.danger-button:hover { border-color: #d9aaa3; background: #fff2ef; }
 .ref-panel { padding: 15px; }
 .ref-panel h2 { margin-bottom: 12px; }
 .ref-panel > small { display: block; margin-top: 10px; color: #9aa59d; font-size: 8px; }
@@ -403,6 +427,8 @@ input::placeholder, textarea::placeholder { color: #a8b1aa; }
   .detail-title h1 { font-size: 18px; }
   .detail-title > p:last-child { line-height: 1.4; }
   .detail-tools .icon-button { width: 29px; height: 29px; }
+  .detail-tools { gap: 4px; }
+  .cancel-request-button { min-height: 29px; padding: 0 7px; font-size: 8px; }
   .detail-panel .panel-heading { flex-wrap: wrap; }
   .detail-panel .panel-heading > .secondary { min-height: 32px; }
   .missing-banner { margin-right: 15px; margin-left: 15px; }

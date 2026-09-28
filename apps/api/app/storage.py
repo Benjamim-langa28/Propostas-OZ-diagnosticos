@@ -33,3 +33,15 @@ async def signed_document_url(token: str, object_path: str, expires_in: int = 36
     if not signed:
         raise HTTPException(502, "O armazenamento não devolveu uma ligação de transferência.")
     return signed if signed.startswith("http") else f"{base}/storage/v1{signed}"
+
+
+async def delete_document(token: str, object_path: str, bucket: str = BUCKET) -> None:
+    base, _ = require_supabase()
+    url = f"{base}/storage/v1/object/{bucket}/{quote(object_path, safe='/')}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.delete(url, headers=headers_for(token))
+    except httpx.RequestError as exc:
+        raise HTTPException(503, "Não foi possível contactar o armazenamento para apagar o ficheiro.") from exc
+    if response.is_error:
+        raise HTTPException(502, "Não foi possível apagar o ficheiro da biblioteca privada.")
