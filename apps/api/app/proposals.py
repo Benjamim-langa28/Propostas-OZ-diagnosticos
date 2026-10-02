@@ -1,4 +1,5 @@
 import html
+import logging
 import re
 import asyncio
 import mimetypes
@@ -16,12 +17,14 @@ from app.auth import CurrentUser, current_user
 from app.config import settings
 from app.documents import MAX_UPLOAD_BYTES, extract_mqt_rows, extract_upload, image_mime_type
 from app.email_intake import looks_like_email
-from app.ai.orchestrator import orchestrate_request_analysis
-from app.proposal_pdf import build_proposal_pdf
+from app.ai.orchestrator import orchestrate_request_analysis, reconcile_missing
+from app.services.field_activities import run_field_activity_engine
+from app.services.proposal_pdf import build_proposal_pdf
 from app.supabase_rest import rest
 from app.storage import signed_document_url, upload_document
 from app.technical_diagnosis import analyze_technical_diagnosis
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api", tags=["proposals"])
 
 STATUSES = {
@@ -187,8 +190,8 @@ async def analyze_request(
     fields = {"client_name": client_name.strip(), "client_email": client_email.strip(),
               "project_name": project_name.strip(), "location": location.strip(),
               "deadline": deadline.strip()}
-    if image_inputs and not settings.openai_api_key:
-        raise HTTPException(503, "Para analisar imagens, configura OPENAI_API_KEY na API Python.")
+    if image_inputs and not settings.llm_configured:
+        raise HTTPException(503, "Para analisar imagens, configura OPENAI_API_KEY ou LLM_BASE_URL na API Python.")
     orchestrated = await orchestrate_request_analysis(content, fields, user.token, image_inputs)
     result = orchestrated["fields"]
     analysis_error = orchestrated["analysis_error"]
@@ -278,9 +281,14 @@ async def get_request(request_id: str, user: CurrentUser = Depends(current_user)
         items = await rest(user.token, "proposal_items", params={
             "proposal_id": f"eq.{proposal['id']}", "order": "position.asc,created_at.asc",
         })
+    try:  # informação interna; se a migração ainda não foi aplicada, o resto do detalhe continua a funcionar
+        hypotheses = await rest(user.token, "proposal_solution_hypotheses", params={
+            "request_id": f"eq.{request_id}", "order": "pathology_code.asc,solution_code.asc"}) or []
+    except HTTPException:
+        hypotheses = []
     return {"request": request_row, "analysis": analyses[0] if analyses else None,
             "proposal": proposal, "items": items, "documents": documents, "visits": visits,
-            "mqt_items": mqt_items}
+            "mqt_items": mqt_items, "solution_hypotheses": hypotheses}
 
 
 @router.post("/proposals/{request_id}/technical-diagnosis")
@@ -350,20 +358,7 @@ async def update_request_fields(request_id: str, update: FieldsUpdate,
     request_row = current[0]
     fields = {**(request_row.get("extracted_fields") or {}), **update.fields}
     title = fields.get("project_name") or fields.get("client_name") or request_row["title"]
-    missing = list(fields.get("missing_information") or [])
-    required_fields = [("client_name", "Nome do cliente"), ("client_email", "Email do cliente"),
-                       ("project_name", "Nome da obra"), ("location", "Localização")]
-    optional_fields = [("building_area_m2", "Área aproximada"), ("storey_count", "Número de pisos"),
-                       ("construction_year", "Ano de construção"), ("basement_count", "Número de caves"),
-                       ("symptom_locations", "Localização das anomalias")]
-    for key, label in required_fields:
-        if fields.get(key):
-            missing = [item for item in missing if label.casefold() not in str(item).casefold()]
-        elif not any(label.casefold() in str(item).casefold() for item in missing):
-            missing.append(label)
-    for key, label in optional_fields:
-        if fields.get(key):
-            missing = [item for item in missing if label.casefold() not in str(item).casefold()]
+    missing = reconcile_missing(fields)
     fields["missing_information"] = missing
     deadline = fields.get("deadline") or None
     if deadline:
@@ -486,11 +481,22 @@ async def list_services(user: CurrentUser = Depends(current_user)) -> list[dict[
                                                        "order": "category.asc,name.asc", "limit": "250"})
 
 
+async def suggest_scope_items(token: str, owner_id: str, proposal_id: str, request_id: str,
+                              fields: dict[str, Any], raw_text: str,
+                              technical: dict[str, Any] | None) -> dict[str, Any]:
+    """Motor de Atividades de Campo: acrescenta atividades BASE e CONDICIONAIS (com consequências).
+
+    Ambas entram no valor total da proposta. As soluções ficam só como hipóteses internas.
+    Nunca remove linhas, nunca inventa preços e nunca repete serviços já existentes.
+    """
+    return await run_field_activity_engine(token, owner_id, proposal_id, request_id, fields, raw_text, technical)
+
+
 @router.post("/proposals/{request_id}/generate")
 async def generate_proposal(request_id: str,
                             user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
     request_rows = await rest(user.token, "proposal_requests", params={
-        "id": f"eq.{request_id}", "select": "status,extracted_fields", "limit": "1",
+        "id": f"eq.{request_id}", "select": "status,extracted_fields,raw_text", "limit": "1",
     })
     if not request_rows:
         raise HTTPException(404, "Pedido não encontrado.")
@@ -499,58 +505,51 @@ async def generate_proposal(request_id: str,
     result = await rest(user.token, "rpc/create_proposal_for_request", method="POST",
                         body={"p_request_id": request_id})
     row = result[0] if isinstance(result, list) else result
-    current_items = await rest(user.token, "proposal_items", params={
-        "proposal_id": f"eq.{row['proposal_id']}", "select": "service_id,position",
-    })
     analyses = await rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"})
-    if request_rows:
-        extracted = request_rows[0].get("extracted_fields") or {}
-        requested = " ".join(extracted.get("requested_services") or []).casefold()
-        service_matches = (
-            ("ELEC_INSPECT", ("inspeção", "inspeccao", "inspecionar")),
-            ("ELEC_CONTINUITY", ("continuidade",)),
-            ("ELEC_INSULATION", ("isolamento",)),
-            ("ELEC_LOAD", ("carga", "sobrecarga")),
-            ("ELEC_REPORT", ("relatório", "relatorio", "recomendações", "recomendacoes")),
-        )
-        matched_ids = [service_id for service_id, words in service_matches if any(word in requested for word in words)]
-        technical = (analyses[0].get("extracted") or {}).get("technical_diagnosis") if analyses else {}
-        test_basis_by_service: dict[str, list[str]] = {}
-        for candidate in (technical or {}).get("candidates", []):
-            for test in candidate.get("tests", []):
-                service_id = test.get("service_id")
-                if service_id:
-                    test_basis_by_service.setdefault(str(service_id), []).append(
-                        f"{test.get('code')} — {test.get('name')}"
-                    )
-        matched_ids = list(dict.fromkeys([*matched_ids, *test_basis_by_service.keys()]))
-        if matched_ids:
-            services = await rest(user.token, "services", params={
-                "service_id": f"in.({','.join(matched_ids)})", "active": "eq.true", "select": "service_id,name,unit,technical_basis",
-            })
-            service_by_id = {service["service_id"]: service for service in services}
-            new_items = []
-            existing_service_ids = {item["service_id"] for item in current_items if item.get("service_id")}
-            next_position = max((int(item.get("position") or 0) for item in current_items), default=0) + 1
-            for service_id in matched_ids:
-                if service_id in existing_service_ids:
-                    continue
-                service = service_by_id.get(service_id)
-                if not service:
-                    continue
-                technical_basis = service.get("technical_basis")
-                test_basis = "; ".join(test_basis_by_service.get(service_id, []))
-                if test_basis:
-                    technical_basis = "; ".join(value for value in (test_basis, technical_basis) if value)
-                new_items.append({
-                    "owner_id": user.id, "proposal_id": row["proposal_id"], "service_id": service_id,
-                    "name": service["name"], "unit": service["unit"], "quantity": 1,
-                    "unit_price": 0, "origin": "SUGGESTED", "technical_basis": technical_basis,
-                    "position": next_position + len(new_items),
-                })
-            if new_items:
-                await rest(user.token, "proposal_items", method="POST", body=new_items, prefer="return=minimal")
+    technical = (analyses[0].get("extracted") or {}).get("technical_diagnosis") if analyses else None
+    try:
+        await suggest_scope_items(user.token, user.id, row["proposal_id"], request_id,
+                                  request_rows[0].get("extracted_fields") or {},
+                                  request_rows[0].get("raw_text") or "", technical)
+    except HTTPException:
+        # A proposta já existe; o engenheiro pode voltar a pedir a sugestão em "Sugerir serviços".
+        logger.exception("Sugestão de atividades de campo falhou ao gerar a proposta %s", request_id)
     return {"id": row["proposal_id"], "proposal_no": row["proposal_no"]}
+
+
+@router.post("/proposals/{request_id}/suggest-scope")
+async def suggest_scope(request_id: str, user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status,extracted_fields,raw_text", "limit": "1",
+    })
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de alterar os serviços.")
+    proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    if not proposals:
+        raise HTTPException(409, "Gera a proposta antes de sugerir serviços.")
+    analyses = await rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    technical = (analyses[0].get("extracted") or {}).get("technical_diagnosis") if analyses else None
+    result = await suggest_scope_items(user.token, user.id, proposals[0]["id"], request_id,
+                                       request_rows[0].get("extracted_fields") or {},
+                                       request_rows[0].get("raw_text") or "", technical)
+    added, unmapped, flags = result["added"], result["unmapped"], result["flags"]
+    if added:
+        await mark_pricing(user.token, proposals[0]["id"])
+        message = (f"{len(added)} atividade(s) de campo prevista(s), base e condicionais, incluídas no valor total. "
+                   "Confirma quantidades e preços.")
+    else:
+        message = "As atividades de campo previstas já estão na proposta."
+    if result["hypotheses"]:
+        message += f" {result['hypotheses']} hipótese(s) de solução guardada(s) só para consulta interna."
+    if unmapped:
+        names = "; ".join(f"{u['code']} {u['name']}" for u in unmapped[:6])
+        message += f" Atenção: {len(unmapped)} item(ns) sem serviço no catálogo ({names}) — acrescenta-os manualmente."
+    critical = [flag["message"] for flag in flags if flag["severity"] == "CRITICAL"]
+    if critical:
+        message += " Revisão técnica necessária: " + " ".join(critical[:3])
+    return {"added": added, "unmapped": unmapped, "flags": flags, "message": message}
 
 
 @router.post("/proposals/{request_id}/items")

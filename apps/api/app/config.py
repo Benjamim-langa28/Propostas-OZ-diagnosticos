@@ -6,6 +6,12 @@ class Settings(BaseSettings):
     supabase_publishable_key: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
+    # Alternativa à OpenAI: qualquer API compatível com "chat/completions"
+    # (Gemini, Groq, OpenRouter, Ollama local...). Se LLM_BASE_URL estiver preenchido, é usada em vez da OpenAI.
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_fallback_model: str = ""
     resend_api_key: str = ""
     email_from: str = ""
     web_origin: str = "http://localhost:3000"
@@ -20,6 +26,10 @@ class Settings(BaseSettings):
     proposal_execution_period: str = "Início dos trabalhos: a combinar.\nDuração da inspeção visual e elaboração do relatório: 3 semanas.\nDuração dos ensaios e elaboração do relatório respetivo: 5 semanas."
     proposal_quality_statement: str = "A nossa firma dispõe de um Sistema de Gestão da Qualidade concebido e implementado segundo a NP EN ISO 9001:2015, certificado pela APCER, no âmbito do levantamento de estruturas e fundações e diagnóstico das suas anomalias através de métodos não destrutivos."
     proposal_affiliations_statement: str = "A Oz é detentora do estatuto de Gestor da Qualidade LNEC e membro do GECoRPA — Grémio do Património. Saiba mais em www.oz-diagnostico.pt."
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_base_url.strip() or self.openai_api_key.strip())
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
 
