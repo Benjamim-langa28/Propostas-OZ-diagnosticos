@@ -464,7 +464,7 @@ async def change_status(request_id: str, update: StatusChange,
         if not items:
             raise HTTPException(409, "Adiciona pelo menos um serviço antes de aprovar.")
         if any(float(row["unit_price"]) <= 0 for row in items):
-            raise HTTPException(409, "Confirma um preço superior a zero em todos os serviços ativos.")
+            raise HTTPException(409, "Há serviços ativos com preço por validar (0 não significa gratuito). Confirma um preço superior a zero em todos antes de aprovar.")
     rows = await rest(user.token, "proposal_requests", method="PATCH",
                       params={"id": f"eq.{request_id}", "select": "*"},
                       body={"status": update.status}, prefer="return=representation")
@@ -544,12 +544,17 @@ async def suggest_scope(request_id: str, user: CurrentUser = Depends(current_use
     if result["hypotheses"]:
         message += f" {result['hypotheses']} hipótese(s) de solução guardada(s) só para consulta interna."
     if unmapped:
-        names = "; ".join(f"{u['code']} {u['name']}" for u in unmapped[:6])
+        names = "; ".join(f"{u.get('service_id') or u.get('code') or ''} {u.get('name') or ''}".strip() for u in unmapped[:6])
         message += f" Atenção: {len(unmapped)} item(ns) sem serviço no catálogo ({names}) — acrescenta-os manualmente."
+    price_pending = result.get("price_pending") or 0
+    if price_pending:
+        message += (f" Atenção: {price_pending} serviço(s) sem preço validado — o valor 0 não significa gratuito "
+                    "e o total é provisório até os confirmares.")
     critical = [flag["message"] for flag in flags if flag["severity"] == "CRITICAL"]
     if critical:
         message += " Revisão técnica necessária: " + " ".join(critical[:3])
-    return {"added": added, "unmapped": unmapped, "flags": flags, "message": message}
+    return {"added": added, "unmapped": unmapped, "flags": flags, "message": message,
+            "price_pending": price_pending, "price_review": result.get("price_review") or []}
 
 
 @router.post("/proposals/{request_id}/items")

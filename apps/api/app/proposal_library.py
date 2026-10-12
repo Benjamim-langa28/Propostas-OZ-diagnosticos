@@ -107,6 +107,40 @@ def _text(value: Any) -> str:
     return str(value or "")
 
 
+DUPLICATE_THRESHOLD = 0.85
+MAX_REFERENCES = 5
+
+
+def _reference_signature(candidate: dict[str, Any]) -> set[str]:
+    return set(_tokens(" ".join((str(candidate.get("title") or ""), str(candidate.get("summary") or "")))))
+
+
+def _dedupe_similar_references(scored: list[dict[str, Any]], limit: int = MAX_REFERENCES) -> list[dict[str, Any]]:
+    """Agrupa propostas praticamente idênticas para não contarem como evidências independentes.
+
+    Recebe a lista já ordenada (melhor primeiro). Mantém a melhor de cada grupo e regista
+    em `duplicates_hidden` quantas cópias quase iguais ficaram agrupadas nela.
+    """
+    kept: list[dict[str, Any]] = []
+    signatures: list[set[str]] = []
+    for candidate in scored:
+        signature = _reference_signature(candidate)
+        group = None
+        for index, other in enumerate(signatures):
+            union = signature | other
+            same_request = bool(candidate.get("request_id")) and candidate.get("request_id") == kept[index].get("request_id")
+            if same_request or (union and len(signature & other) / len(union) >= DUPLICATE_THRESHOLD):
+                group = kept[index]
+                break
+        if group is not None:
+            group["duplicates_hidden"] = int(group.get("duplicates_hidden") or 0) + 1
+            continue
+        candidate["duplicates_hidden"] = 0
+        kept.append(candidate)
+        signatures.append(signature)
+    return kept[:limit]
+
+
 @router.get("/matches")
 async def match_request_to_prior_proposals(
     request_id: str = Query(min_length=1, max_length=80),
@@ -182,11 +216,12 @@ async def match_request_to_prior_proposals(
         candidate["match_percent"] = percent
         candidate["match_components"] = components
         scored.append(candidate)
-    return sorted(
+    ordered = sorted(
         scored,
         key=lambda row: (row["match_percent"], row.get("created_at", "")),
         reverse=True,
-    )[:5]
+    )
+    return _dedupe_similar_references(ordered)
 
 
 @router.post("")

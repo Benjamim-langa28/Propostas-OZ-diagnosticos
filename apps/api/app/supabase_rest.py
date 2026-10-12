@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 import httpx
@@ -8,76 +7,237 @@ from app.config import settings
 
 
 def require_supabase() -> tuple[str, str]:
-    if not settings.supabase_url or not settings.supabase_publishable_key:
-        raise HTTPException(503, "Configura SUPABASE_URL e SUPABASE_PUBLISHABLE_KEY no .env da API.")
-    return settings.supabase_url.rstrip("/"), settings.supabase_publishable_key
+    if (
+        not settings.supabase_url
+        or not settings.supabase_publishable_key
+    ):
+        raise HTTPException(
+            503,
+            "Configura SUPABASE_URL e SUPABASE_PUBLISHABLE_KEY no .env da API.",
+        )
+
+    return (
+        settings.supabase_url.rstrip("/"),
+        settings.supabase_publishable_key,
+    )
 
 
-def headers_for(token: str, prefer: str | None = None) -> dict[str, str]:
+def headers_for(
+    token: str,
+    prefer: str | None = None,
+) -> dict[str, str]:
+
     _, key = require_supabase()
+
     headers = {
         "apikey": key,
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+
     if prefer:
         headers["Prefer"] = prefer
+
     return headers
 
 
 async def rest(
     token: str,
-    path: str,
+    table: str,
     *,
     method: str = "GET",
     params: dict[str, Any] | None = None,
     body: Any = None,
     prefer: str | None = None,
 ) -> Any:
-    base, _ = require_supabase()
-    url = f"{base}/rest/v1/{path.lstrip('/')}"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.request(
-                method,
-                url,
-                params=params,
-                headers=headers_for(token, prefer),
-                content=json.dumps(body, default=str) if body is not None else None,
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            503,
-            "A API não conseguiu contactar o Supabase. Verifica a ligação à rede e SUPABASE_URL.",
-        ) from exc
+
+    base_url, _ = require_supabase()
+
+    path = f"/rest/v1/{table}"
+    url = f"{base_url}{path}"
+
+    headers = headers_for(
+        token,
+        prefer=prefer,
+    )
+
+    async with httpx.AsyncClient(
+        timeout=60.0
+    ) as client:
+
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=body,
+        )
+
     if response.is_error:
-        if response.status_code in (401, 403):
-            raise HTTPException(response.status_code, "O Supabase recusou o acesso a este registo.")
+
+        if response.status_code in (
+            401,
+            403,
+        ):
+            raise HTTPException(
+                response.status_code,
+                "O Supabase recusou o acesso a este registo.",
+            )
+
         try:
-            detail: Any = response.json().get("message") or response.json().get("hint") or response.text
+
+            payload = response.json()
+
+            if isinstance(
+                payload,
+                dict,
+            ):
+
+                detail: Any = (
+                    payload.get("message")
+                    or payload.get("hint")
+                    or payload.get("details")
+                    or response.text
+                )
+
+            else:
+
+                detail = response.text
+
         except ValueError:
+
             detail = response.text
-        raise HTTPException(502, f"Supabase rejeitou a operação: {detail}")
+
+        print(
+            f"[SUPABASE ERROR] "
+            f"{method} {path} -> "
+            f"HTTP {response.status_code} | "
+            f"{detail}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            502,
+            f"Supabase rejeitou a operação: {detail}",
+        )
+
     if not response.content:
         return None
-    try:
-        return response.json()
-    except ValueError:
-        return response.text
+
+    content_type = response.headers.get(
+        "content-type",
+        "",
+    )
+
+    if "application/json" in content_type:
+
+        try:
+            return response.json()
+
+        except ValueError:
+            return response.text
+
+    return response.text
 
 
-async def verify_access_token(token: str) -> dict[str, Any]:
-    base, _ = require_supabase()
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(f"{base}/auth/v1/user", headers=headers_for(token))
-    except httpx.RequestError as exc:
+async def verify_access_token(
+    token: str,
+) -> dict[str, Any]:
+
+    if not token:
+
         raise HTTPException(
-            503,
-            "A API não conseguiu validar a sessão no Supabase. Verifica a ligação à rede.",
-        ) from exc
-    if response.status_code in (401, 403):
-        raise HTTPException(401, "A sessão expirou. Inicia sessão novamente.")
+            401,
+            "Token de autenticação em falta.",
+        )
+
+    base_url, _ = require_supabase()
+
+    url = f"{base_url}/auth/v1/user"
+
+    headers = headers_for(token)
+
+    async with httpx.AsyncClient(
+        timeout=30.0
+    ) as client:
+
+        response = await client.get(
+            url,
+            headers=headers,
+        )
+
+    if response.status_code in (
+        401,
+        403,
+    ):
+
+        raise HTTPException(
+            401,
+            "Sessão inválida ou expirada.",
+        )
+
     if response.is_error:
-        raise HTTPException(502, "Não foi possível validar a sessão no Supabase.")
-    return response.json()
+
+        try:
+
+            payload = response.json()
+
+            if isinstance(
+                payload,
+                dict,
+            ):
+
+                detail = (
+                    payload.get("message")
+                    or payload.get(
+                        "error_description"
+                    )
+                    or payload.get("error")
+                    or response.text
+                )
+
+            else:
+
+                detail = response.text
+
+        except ValueError:
+
+            detail = response.text
+
+        print(
+            f"[SUPABASE AUTH ERROR] "
+            f"GET /auth/v1/user -> "
+            f"HTTP {response.status_code} | "
+            f"{detail}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            502,
+            "Não foi possível validar a sessão "
+            f"no Supabase: {detail}",
+        )
+
+    try:
+
+        data = response.json()
+
+    except ValueError:
+
+        raise HTTPException(
+            502,
+            "O Supabase devolveu uma resposta "
+            "inválida ao validar a sessão.",
+        )
+
+    if (
+        not isinstance(data, dict)
+        or not data.get("id")
+    ):
+
+        raise HTTPException(
+            401,
+            "Sessão inválida.",
+        )
+
+    return data
