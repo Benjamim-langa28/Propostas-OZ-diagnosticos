@@ -1,8 +1,7 @@
 "use client";
 
 import { createClient, type Session } from "@supabase/supabase-js";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
-
+import { Fragment, type FormEvent, useCallback, useEffect, useState } from "react";
 type ProposalRequest = {
   id: string;
   title: string;
@@ -24,6 +23,18 @@ type Detail = {
   mqt_items: Array<{ id: string; code?: string | null; description: string; unit: string; quantity: number }>;
 };
 type Knowledge = Record<string, Array<Record<string, any>>>;
+type ItemDetail = {
+  linked: boolean;
+  note?: string | null;
+  technical_basis?: string;
+  duration?: { minutes: number; team_size: number | null; condition?: string | null; condition_to_confirm: boolean; source: string } | null;
+  labor?: Array<{ name: string; role?: string; quantity?: number | null }>;
+  resources?: Array<{ name: string; type: string; role?: string; quantity?: number | null; condition?: string | null; external?: boolean; rentable?: boolean; needs_calibration?: boolean }>;
+  tests?: Array<{ code: string; name?: string }>;
+  procedures?: Array<{ code: string; title: string }>;
+  triggers?: Array<{ name?: string; service_id: string; relation?: string; note?: string; quantity: number }>;
+  required_by?: Array<{ name?: string; service_id: string; relation?: string; note?: string }>;
+};
 type ProposalReference = {
   source: "uploaded" | "generated"; id: string; request_id?: string | null; proposal_no?: string | null;
   title: string; client_name?: string | null; location?: string | null; summary?: string | null;
@@ -331,7 +342,17 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, onOpenReques
   const [referencesLoading, setReferencesLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savingFields, setSavingFields] = useState(false);
-
+const [itemDetails, setItemDetails] = useState<Record<string, ItemDetail>>({});
+const [openItems, setOpenItems] = useState<Record<string, boolean>>({});
+const itemsKey = detail?.items.map((i) => `${i.id}:${i.quantity}`).join("|") ?? "";
+useEffect(() => {
+  if (!detail?.proposal) { setItemDetails({}); return; }
+  let active = true;
+  void api<Record<string, ItemDetail>>(token, `/api/proposals/${detail.request.id}/item-details`)
+    .then((d) => { if (active) setItemDetails(d); })
+    .catch((e) => { if (active) setError((e as Error).message); });
+  return () => { active = false; };
+}, [token, detail?.request.id, detail?.proposal?.id, itemsKey, setError]);
   useEffect(() => {
     if (!detail) return;
     const extracted = detail.request.extracted_fields ?? {};
@@ -407,6 +428,16 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, onOpenReques
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
+  const rebuildScope = async () => {
+    if (!window.confirm("Refazer o âmbito? As linhas sugeridas automaticamente (incluindo quantidades e preços que tenhas editado nelas) serão apagadas e recriadas a partir do diagnóstico atual. Os serviços que adicionaste à mão ficam.")) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ message: string }>(token, `/api/proposals/${detail.request.id}/rebuild-scope`, { method: "POST" });
+      setNotice(result.message); onRefresh();
+    }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
   const addService = async () => {
     if (!serviceId) return;
     setBusy(true); setError("");
@@ -463,10 +494,10 @@ function RequestDetail({ token, detail, loading, onRefresh, onBack, onOpenReques
     <section className="detail-heading"><button className="back-button" onClick={onBack}>←</button><div className="detail-title"><p className="eyebrow">PEDIDO DE PROPOSTA</p><h1>{fields.project_name || detail.request.title}</h1><p>{fields.client_name || "Cliente por identificar"}{fields.location ? ` · ${fields.location}` : ""}</p></div><div className="detail-tools">{detail.request.status !== "CANCELLED" && <button className="cancel-request-button" onClick={() => changeStatusWithConfirmation("CANCELLED")} disabled={busy}>Cancelar pedido</button>}<span className={statusClass(detail.request.status)}><i />{STATUS_LABEL[detail.request.status] ?? detail.request.status}</span><button className="icon-button" onClick={onRefresh} title="Atualizar">↻</button></div></section>
     <div className="detail-grid"><div className="detail-main-column">
       <section className="panel detail-panel"><div className="panel-heading"><div><h2>Dados extraídos</h2><p>Confirma os campos sugeridos antes de gerar a proposta.</p></div><span className={`mode-tag mode-${detail.analysis?.analysis_mode?.toLowerCase() ?? "rules"}`}>{detail.analysis?.analysis_mode === "OPENAI" ? "✳ OpenAI" : "↗ Regras básicas"}</span></div>{allMissing.length > 0 && <div className="missing-banner"><span>!</span><div><b>Informação por confirmar</b><p>{allMissing.join(" · ")}</p></div></div>}{fields.site_visit_recommended != null && <div className="technical-note">Visita ao local: {fields.site_visit_recommended ? "recomendada" : "não indicada pela análise preliminar"}. Confirma esta sugestão antes de a incluir no âmbito.</div>}{[["cliente", "DADOS DA EMPRESA CLIENTE"], ["obra", "PEDIDO E ANÁLISE PRELIMINAR"], ["remetente", "ASSINATURA DO REMETENTE"]].map(([group, heading]) => <section className="field-group" key={group}><h3>{heading}</h3><div className="detail-fields">{FIELDS.filter(([, , , fieldGroup]) => fieldGroup === group).map(([key, label, type]) => <label key={key} className={type === "textarea" ? "wide-field" : ""}>{label}{type === "textarea" ? <textarea rows={3} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} /> : <input type={type} value={fields[key] ?? ""} onChange={(e) => setFields({ ...fields, [key]: e.target.value })} />}</label>)}</div></section>)}{(fields.categories ?? []).length > 0 && <div className="category-line"><span>Categorias sugeridas</span>{(fields.categories ?? []).map((category: string) => <span className="category-chip" key={category}>{category}</span>)}</div>}<div className="panel-bottom"><span className="helper-copy">A análise automática é uma sugestão.</span><button className="secondary" onClick={persistFields} disabled={savingFields}>{savingFields ? "A guardar…" : "Guardar dados"}</button></div></section>
-      <section className="panel technical-panel"><div className="panel-heading"><div><h2>Mapeamento técnico de patologias</h2><p>Hipóteses, causas, ensaios e soluções ligadas aos códigos da base de conhecimento.</p></div><button className="secondary" onClick={refreshDiagnosis} disabled={diagnosing}>{diagnosing ? "A analisar…" : "Reanalisar pedido"}</button></div>{diagnosis?.message && <div className={diagnosis.status === "knowledge_base_unavailable" ? "technical-warning" : "technical-note"}>{diagnosis.message}</div>}{diagnosis?.candidates?.length ? <div className="pathology-grid">{diagnosis.candidates.map((candidate: any) => <article className="pathology-card" key={candidate.code}><div className="pathology-card-heading"><div><span className="pathology-code">{candidate.code}</span><h3>{candidate.name}</h3></div><strong>{candidate.match_percent}%<small>aderência ao texto</small></strong></div><p className="pathology-severity">{candidate.group || "Base técnica"} · Severidade {candidate.severity?.map((level: any) => level.name).join(" / ") || `indicativa ${candidate.severity_min}–${candidate.severity_max}`}</p>{candidate.severity?.length > 0 && candidate.severity[candidate.severity.length - 1].action && <p className="pathology-action">Ação indicativa: {candidate.severity[candidate.severity.length - 1].action}</p>}{candidate.evidence?.length > 0 && <div className="pathology-evidence"><b>Indício no pedido</b>{candidate.evidence.map((item: string, index: number) => <p key={`${candidate.code}-evidence-${index}`}>“{item}”</p>)}</div>}<div className="pathology-mappings">{([["Causas a verificar", candidate.causes], ["Ensaios recomendados", candidate.tests], ["Soluções de referência", candidate.solutions]] as Array<[string, any[]]>).map(([title, rows]) => <div key={`${candidate.code}-${title}`}><b>{title}</b>{rows?.length ? <ul>{rows.map((row: any) => <li key={row.code}><code>{row.code}</code> {row.name}</li>)}</ul> : <small>Sem código associado na base.</small>}</div>)}</div></article>)}</div> : diagnosis && diagnosis.status !== "knowledge_base_unavailable" ? <div className="empty-state technical-empty"><h3>Sem correspondência codificada</h3><p>A descrição ainda não permite ligar uma patologia aos códigos da base técnica. O engenheiro pode completar a classificação após rever o pedido.</p></div> : !diagnosis ? <div className="empty-state technical-empty"><p>Ainda não existe análise técnica guardada para este pedido. Usa “Reanalisar pedido” para consultar o catálogo de patologias.</p></div> : null}<div className="similarity-note">A percentagem mede aderência textual ao catálogo e não a probabilidade de diagnóstico. Todas as causas e soluções exigem validação do engenheiro responsável.</div></section>
+      <section className="panel technical-panel"><div className="panel-heading"><div><h2>Mapeamento técnico de patologias</h2><p>Hipóteses, causas, ensaios e soluções ligadas aos códigos da base de conhecimento.</p></div><button className="secondary" onClick={refreshDiagnosis} disabled={diagnosing}>{diagnosing ? "A analisar…" : "Reanalisar pedido"}</button></div>{diagnosis?.message && <div className={diagnosis.status === "knowledge_base_unavailable" ? "technical-warning" : "technical-note"}>{diagnosis.message}</div>}{diagnosis?.candidates?.length ? <div className="pathology-grid">{diagnosis.candidates.map((candidate: any) => <article className="pathology-card" key={candidate.code}><div className="pathology-card-heading"><div><span className="pathology-code">{candidate.code}</span><h3>{candidate.name}</h3></div><strong>{candidate.match_percent}%<small>aderência ao texto</small></strong></div><p className="pathology-severity">{candidate.group || "Base técnica"} · Severidade {candidate.severity?.map((level: any) => level.name).join(" / ") || `indicativa ${candidate.severity_min}–${candidate.severity_max}`}</p>{candidate.severity?.length > 0 && candidate.severity[candidate.severity.length - 1].action && <p className="pathology-action">Ação indicativa: {candidate.severity[candidate.severity.length - 1].action}</p>}<div className="pathology-mappings">{([["Causas a verificar", candidate.causes], ["Ensaios recomendados", candidate.tests], ["Soluções de referência", candidate.solutions]] as Array<[string, any[]]>).map(([title, rows]) => <div key={`${candidate.code}-${title}`}><b>{title}</b>{rows?.length ? <ul>{rows.map((row: any) => <li key={row.code}><code>{row.code}</code> {row.name}</li>)}</ul> : <small>Sem código associado na base.</small>}</div>)}</div></article>)}</div> : diagnosis && diagnosis.status !== "knowledge_base_unavailable" ? <div className="empty-state technical-empty"><h3>Sem correspondência codificada</h3><p>A descrição ainda não permite ligar uma patologia aos códigos da base técnica. O engenheiro pode completar a classificação após rever o pedido.</p></div> : !diagnosis ? <div className="empty-state technical-empty"><p>Ainda não existe análise técnica guardada para este pedido. Usa “Reanalisar pedido” para consultar o catálogo de patologias.</p></div> : null}{diagnosis?.weak_candidates?.length > 0 && <WeakMatches items={diagnosis.weak_candidates} />}<div className="similarity-note">A percentagem mede aderência textual ao catálogo e não a probabilidade de diagnóstico. Todas as causas e soluções exigem validação do engenheiro responsável.</div></section>
       <section className="panel prior-reference-panel"><div className="panel-heading"><div><h2>Propostas parecidas já realizadas</h2><p>Comparação por âmbito, objetivo e localização com propostas e ficheiros anteriores.</p></div><span className="count-pill">{referencesLoading ? "A comparar…" : `${references.length} correspondências`}</span></div>{referencesLoading ? <div className="empty-state"><span className="loader" />A comparar com o histórico de propostas…</div> : references.length ? <div className="prior-reference-list">{references.map((reference) => <article className="prior-reference-row" key={`${reference.source}-${reference.id}`}><div className="reference-copy"><span className="reference-source">{reference.source === "uploaded" ? "ARQUIVO CARREGADO" : "PROPOSTA GERADA"}{reference.proposal_no ? ` · ${reference.proposal_no}` : ""}</span><b>{reference.title}</b><small>{[reference.client_name, reference.location, displayDate(reference.created_at)].filter(Boolean).join(" · ") || "Sem cliente/localização identificados"}</small>{reference.summary && <p>{reference.summary}</p>}{(reference.duplicates_hidden ?? 0) > 0 && <small>+{reference.duplicates_hidden} proposta(s) praticamente idêntica(s) agrupada(s) nesta referência.</small>}<small className="match-breakdown">{typeof reference.match_components?.scope === "number" ? `Âmbito ${reference.match_components.scope}%` : ""}{typeof reference.match_components?.objective === "number" ? ` · Objetivo ${reference.match_components.objective}%` : ""}{typeof reference.match_components?.location === "number" ? ` · Localização ${reference.match_components.location}%` : ""}</small><div className="match-track" role="img" aria-label={`Correspondência fuzzy ${reference.match_percent}%`}><span style={{ width: `${reference.match_percent}%` }} /></div></div><div className="reference-score"><strong>{reference.match_percent}%</strong><span>semelhança</span></div>{reference.source === "uploaded" ? <button className="secondary" onClick={async () => { try { const result = await api<{ url: string }>(token, `/api/proposal-library/${reference.id}/download`); window.open(result.url, "_blank", "noopener,noreferrer"); } catch (e) { setError((e as Error).message); } }}>Consultar</button> : <button className="secondary" onClick={() => reference.request_id && onOpenRequest(reference.request_id)}>Abrir</button>}</article>)}</div> : <div className="empty-state"><div className="empty-icon">⌕</div><h3>Não há propostas suficientemente parecidas</h3><p>À medida que guardares propostas geradas ou carregares propostas anteriores, o sistema compara o âmbito, o objetivo e a localização deste pedido.</p></div>}<div className="similarity-note">A percentagem é uma comparação textual aproximada. Revê sempre o âmbito, os preços e a adequação técnica da referência.</div></section>
-      {detail.solution_hypotheses && detail.solution_hypotheses.length > 0 && <section className="panel detail-panel"><div className="panel-heading"><div><h2>Hipóteses de solução (só para consulta interna)</h2><p>Não constam da proposta. Serão conferidas com o diagnóstico de campo, que determina a solução final.</p></div></div><ul>{detail.solution_hypotheses.map((hypothesis) => <li key={hypothesis.id}><b>{hypothesis.solution_code}</b> · {hypothesis.solution_name} <small>({hypothesis.pathology_code}{hypothesis.status === "PREDICTED" ? " · prevista" : ` · ${hypothesis.status}`})</small></li>)}</ul></section>}
-      <section className="panel detail-panel"><div className="panel-heading"><div><h2>Âmbito e preços</h2><p>Os preços de catálogo servem de ponto de partida; revê quantidades e valores.</p></div>{detail.proposal ? <span className="proposal-no">{detail.proposal.proposal_no}</span> : <button className="secondary" onClick={generate} disabled={busy || detail.request.status === "CANCELLED"}>Criar proposta <span>→</span></button>}</div>{detail.proposal ? <><div className="service-add"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} disabled={detail.request.status === "CANCELLED"}><option value="">Escolher um serviço…</option>{services.map((s) => <option key={s.service_id} value={s.service_id}>{s.category} · {s.name}</option>)}</select><input aria-label="Quantidade" type="number" min="0" step="0.1" value={quantity} onChange={(e) => setQuantity(e.target.value)} disabled={detail.request.status === "CANCELLED"} /><button className="secondary" onClick={addService} disabled={busy || !serviceId || detail.request.status === "CANCELLED"}>Adicionar</button></div><div className="service-add" style={{ gridTemplateColumns: "1fr" }}><button className="secondary" onClick={suggestScope} disabled={busy || detail.request.status === "CANCELLED"}>Sugerir atividades de campo (base e condicionais) ✳</button></div>{detail.items.length ? <div className="table-scroll"><table className="items-table"><thead><tr><th>SERVIÇO</th><th>QTD.</th><th>PREÇO / UN.</th><th>TOTAL</th><th /></tr></thead><tbody>{detail.items.map((item) => <tr key={item.id}><td><label className="item-name"><input type="checkbox" checked={item.enabled} onChange={(e) => void updateItem(item.id, { enabled: e.target.checked })} disabled={detail.request.status === "CANCELLED"} /><span>{item.name}<small>{item.unit}{item.activity_class === "CONDITIONAL" ? " · condicional (incluída no total)" : item.activity_class === "BASE" ? " · base" : ""}</small>{item.activity_class === "CONDITIONAL" && item.trigger_condition && <small>Condição: {item.trigger_condition}</small>}</span></label></td><td><input className="number-input" type="number" min="0" step="0.1" defaultValue={item.quantity} onBlur={(e) => Number(e.target.value) !== Number(item.quantity) && void updateItem(item.id, { quantity: Number(e.target.value) })} disabled={detail.request.status === "CANCELLED"} /></td><td><input className="number-input price-input" type="number" min="0" step="0.01" defaultValue={item.unit_price} onBlur={(e) => Number(e.target.value) !== Number(item.unit_price) && void updateItem(item.id, { unit_price: Number(e.target.value) })} disabled={detail.request.status === "CANCELLED"} /></td><td>{priceIsPending(item) ? <b title="Sem preço validado. O valor 0 não significa gratuito.">Preço por validar</b> : money(Number(item.quantity) * Number(item.unit_price))}</td><td><button className="remove-button" title="Remover" onClick={() => void removeItem(item.id)} disabled={detail.request.status === "CANCELLED"}>×</button></td></tr>)}</tbody></table></div> : <div className="small-empty">Ainda não foram adicionados serviços.</div>}<div className="technical-note">Aprovação única do diagnóstico: as atividades condicionais incluídas neste âmbito executam-se quando a condição técnica se verificar, sem nova aprovação do cliente. Trabalhos de reparação e custos fora deste âmbito não estão incluídos nem autorizados.</div>{pendingPriceCount > 0 && <div className="technical-warning">{pendingPriceCount} serviço(s) ativo(s) sem preço validado. Não são gratuitos: o total abaixo é provisório até confirmares estes preços.</div>}<div className="totals"><span>Subtotal{pendingPriceCount > 0 ? " (provisório)" : ""} <b>{money(total)}</b></span><span>IVA ({detail.proposal.vat_rate}%) <b>{money(vat)}</b></span><strong>Total <b>{money(total + vat)}</b></strong></div><div className="proposal-actions"><div className="proposal-button-group"><button className="secondary" onClick={saveVersion} disabled={busy || detail.request.status === "CANCELLED"}>Guardar versão v{(versions[0]?.version ?? 0) + 1}</button></div><label className="status-select">Estado<select value={detail.proposal.status} onChange={(e) => changeStatusWithConfirmation(e.target.value)} disabled={busy}>{STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}</select></label></div>{versions.length > 0 && <div className="version-line">Última versão: <b>v{versions[0].version}</b> · {displayDate(versions[0].created_at)}</div>}{detail.proposal.status === "APPROVED" && detail.request.status !== "CANCELLED" && <div className="send-box"><div><b>Enviar por email</b><small>O PDF da proposta será anexado automaticamente ao email.</small></div><input type="email" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="email@cliente.pt" /><textarea rows={2} value={emailMessage} onChange={(e) => setEmailMessage(e.target.value)} placeholder="Mensagem opcional" /><button className="primary" onClick={sendEmail} disabled={busy || !emailTo}>Enviar com Resend <span>→</span></button></div>}{detail.request.status === "CANCELLED" && <div className="cancelled-banner">Pedido cancelado. Reativa-o pelo seletor de estado para continuar a trabalhar.</div>}</> : detail.request.status === "CANCELLED" ? <div className="cancelled-banner">Pedido cancelado. Reativa-o pelo seletor de estado para criar uma proposta.</div> : <div className="generate-callout"><span>✳</span><p>Cria uma proposta para escolher serviços, confirmar os preços e preparar o documento final.</p></div>}</section>
+      {detail.solution_hypotheses && detail.solution_hypotheses.length > 0 && <section className="panel detail-panel"><div className="panel-heading"><div><h2>Hipóteses de solução (só para consulta interna)</h2><p>Não constam da proposta. Serão conferidas com o diagnóstico de campo, que determina a solução final.</p></div></div><ul>{Object.entries(detail.solution_hypotheses.reduce<Record<string, { name: string; pathologies: string[] }>>((acc, h) => { const entry = (acc[h.solution_code] ??= { name: h.solution_name, pathologies: [] }); if (!entry.pathologies.includes(h.pathology_code)) entry.pathologies.push(h.pathology_code); return acc; }, {})).map(([code, entry]) => <li key={code}><b>{code}</b> · {entry.name} <small>(para {entry.pathologies.join(", ")})</small></li>)}</ul></section>}
+      <section className="panel detail-panel"><div className="panel-heading"><div><h2>Âmbito e preços</h2><p>Os preços de catálogo servem de ponto de partida; revê quantidades e valores.</p></div>{detail.proposal ? <span className="proposal-no">{detail.proposal.proposal_no}</span> : <button className="secondary" onClick={generate} disabled={busy || detail.request.status === "CANCELLED"}>Criar proposta <span>→</span></button>}</div>{detail.proposal ? <><div className="service-add"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} disabled={detail.request.status === "CANCELLED"}><option value="">Escolher um serviço…</option>{services.map((s) => <option key={s.service_id} value={s.service_id}>{s.category} · {s.name}</option>)}</select><input aria-label="Quantidade" type="number" min="0" step="0.1" value={quantity} onChange={(e) => setQuantity(e.target.value)} disabled={detail.request.status === "CANCELLED"} /><button className="secondary" onClick={addService} disabled={busy || !serviceId || detail.request.status === "CANCELLED"}>Adicionar</button></div><div className="service-add" style={{ gridTemplateColumns: "1fr 1fr" }}><button className="secondary" onClick={suggestScope} disabled={busy || detail.request.status === "CANCELLED"}>Sugerir atividades de campo ✳</button><button className="secondary" onClick={rebuildScope} disabled={busy || detail.request.status === "CANCELLED"}>Refazer âmbito a partir do diagnóstico atual ↻</button></div>{detail.items.length ? <div className="table-scroll"><table className="items-table"><thead><tr><th>SERVIÇO</th><th>QTD.</th><th>PREÇO / UN.</th><th>TOTAL</th><th /></tr></thead><tbody>{detail.items.map((item) => <Fragment key={item.id}><tr><td><label className="item-name"><input type="checkbox" checked={item.enabled} onChange={(e) => void updateItem(item.id, { enabled: e.target.checked })} disabled={detail.request.status === "CANCELLED"} /><span>{item.name}<small>{item.unit}{item.activity_class === "CONDITIONAL" ? " · condicional (incluída no total)" : item.activity_class === "BASE" ? " · base" : ""}</small>{item.activity_class === "CONDITIONAL" && item.trigger_condition && <small>Condição: {item.trigger_condition}</small>}<button type="button" className="text-button" onClick={(e) => { e.preventDefault(); setOpenItems((o) => ({ ...o, [item.id]: !o[item.id] })); }}>{openItems[item.id] ? "▾ Ocultar detalhe" : "▸ Ver o que inclui"}</button></span></label></td><td><input className="number-input" type="number" min="0" step="0.1" defaultValue={item.quantity} onBlur={(e) => Number(e.target.value) !== Number(item.quantity) && void updateItem(item.id, { quantity: Number(e.target.value) })} disabled={detail.request.status === "CANCELLED"} /></td><td><input className="number-input price-input" type="number" min="0" step="0.01" defaultValue={item.unit_price} onBlur={(e) => Number(e.target.value) !== Number(item.unit_price) && void updateItem(item.id, { unit_price: Number(e.target.value) })} disabled={detail.request.status === "CANCELLED"} /></td><td>{priceIsPending(item) ? <b title="Sem preço validado. O valor 0 não significa gratuito.">Preço por validar</b> : money(Number(item.quantity) * Number(item.unit_price))}</td><td><button className="remove-button" title="Remover" onClick={() => void removeItem(item.id)} disabled={detail.request.status === "CANCELLED"}>×</button></td></tr>{openItems[item.id] && <tr className="item-detail-row"><td colSpan={5}><ItemDetailPanel d={itemDetails[item.id]} /></td></tr>}</Fragment>)}</tbody></table></div> : <div className="small-empty">Ainda não foram adicionados serviços.</div>}<div className="technical-note">Aprovação única do diagnóstico: as atividades condicionais incluídas neste âmbito executam-se quando a condição técnica se verificar, sem nova aprovação do cliente. Trabalhos de reparação e custos fora deste âmbito não estão incluídos nem autorizados.</div>{pendingPriceCount > 0 && <div className="technical-warning">{pendingPriceCount} serviço(s) ativo(s) sem preço validado. Não são gratuitos: o total abaixo é provisório até confirmares estes preços.</div>}<div className="totals"><span>Subtotal{pendingPriceCount > 0 ? " (provisório)" : ""} <b>{money(total)}</b></span><span>IVA ({detail.proposal.vat_rate}%) <b>{money(vat)}</b></span><strong>Total <b>{money(total + vat)}</b></strong></div><div className="proposal-actions"><div className="proposal-button-group"><button className="secondary" onClick={saveVersion} disabled={busy || detail.request.status === "CANCELLED"}>Guardar versão v{(versions[0]?.version ?? 0) + 1}</button></div><label className="status-select">Estado<select value={detail.proposal.status} onChange={(e) => changeStatusWithConfirmation(e.target.value)} disabled={busy}>{STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}</select></label></div>{versions.length > 0 && <div className="version-line">Última versão: <b>v{versions[0].version}</b> · {displayDate(versions[0].created_at)}</div>}{detail.proposal.status === "APPROVED" && detail.request.status !== "CANCELLED" && <div className="send-box"><div><b>Enviar por email</b><small>O PDF da proposta será anexado automaticamente ao email.</small></div><input type="email" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="email@cliente.pt" /><textarea rows={2} value={emailMessage} onChange={(e) => setEmailMessage(e.target.value)} placeholder="Mensagem opcional" /><button className="primary" onClick={sendEmail} disabled={busy || !emailTo}>Enviar com Resend <span>→</span></button></div>}{detail.request.status === "CANCELLED" && <div className="cancelled-banner">Pedido cancelado. Reativa-o pelo seletor de estado para continuar a trabalhar.</div>}</> : detail.request.status === "CANCELLED" ? <div className="cancelled-banner">Pedido cancelado. Reativa-o pelo seletor de estado para criar uma proposta.</div> : <div className="generate-callout"><span>✳</span><p>Cria uma proposta para escolher serviços, confirmar os preços e preparar o documento final.</p></div>}</section>
     </div><aside className="detail-side-column"><section className="panel side-panel"><p className="eyebrow">RESUMO</p><div className="side-stat"><span>Recebido</span><b>{displayDate(detail.request.created_at)}</b></div><div className="side-stat"><span>Prazo do cliente</span><b>{displayDate(detail.request.deadline)}</b></div><div className="side-stat"><span>Origem</span><b>{detail.request.source === "upload" ? "Anexo" : detail.request.source === "email" ? "Email" : "Manual"}</b></div><div className="side-stat"><span>Proposta</span><b>{detail.proposal?.proposal_no ?? "Ainda não criada"}</b></div>{detail.documents.length > 0 && <div className="side-documents"><span>Anexos originais</span>{detail.documents.map((document) => <button key={document.id} onClick={async () => { try { const result = await api<{ url: string }>(token, `/api/documents/${document.id}/download`); window.open(result.url, "_blank", "noopener,noreferrer"); } catch (e) { setError((e as Error).message); } }}>↗ {document.file_name}</button>)}</div>}</section><section className="panel side-panel visits-panel"><p className="eyebrow">VISITAS AO LOCAL</p><label>Data e hora<input type="datetime-local" value={visitDate} onChange={(e) => setVisitDate(e.target.value)} disabled={detail.request.status === "CANCELLED"} /></label><label>Nota<input value={visitNote} onChange={(e) => setVisitNote(e.target.value)} placeholder="Contacto, acesso, observações" disabled={detail.request.status === "CANCELLED"} /></label><button className="secondary" onClick={scheduleVisit} disabled={busy || !visitDate || detail.request.status === "CANCELLED"}>Agendar visita</button>{detail.visits.length > 0 && <div className="visit-list">{detail.visits.map((visit) => <div className="visit-row" key={visit.id}><div><b>{new Date(visit.scheduled_at).toLocaleString("pt-PT", { dateStyle: "medium", timeStyle: "short" })}</b><small>{visit.note || "Sem observações"}</small></div><select aria-label="Estado da visita" value={visit.status} onChange={(e) => void updateVisitStatus(visit.id, e.target.value)}><option value="SCHEDULED">Agendada</option><option value="COMPLETED">Concluída</option><option value="CANCELLED">Cancelada</option></select></div>)}</div>}</section><section className="side-tip"><span>✳</span><div><b>Revisão técnica</b><p>Confirma âmbito, quantidades, preços, exclusões e prazo antes de aprovar.</p></div></section><section className="panel side-panel status-panel"><label className="eyebrow" htmlFor="request-status">ESTADO DO PEDIDO</label><select id="request-status" value={detail.request.status} onChange={(e) => changeStatusWithConfirmation(e.target.value)} disabled={busy}>{STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}</select><small>As alterações são guardadas no sistema.</small></section></aside></div>
   </>;
 }
@@ -503,24 +534,23 @@ function ProposalTermsPanel({ token, requestId, proposal, onRefresh, setError, s
 }
 
 function ProposalPdfDownload({ token, requestId, setError }: { token: string; requestId: string; setError: (s: string) => void }) {
-  const [busy, setBusy] = useState(false);
-  async function download() {
-    setBusy(true); setError("");
+  const [busy, setBusy] = useState("");
+  async function download(kind: "pdf" | "docx") {
+    setBusy(kind); setError("");
     try {
-      const response = await fetch(`${API_URL}/api/proposals/${requestId}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
+      const response = await fetch(`${API_URL}/api/proposals/${requestId}/${kind}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        throw new Error(payload?.detail ?? `PDF indisponível (${response.status})`);
+        throw new Error(payload?.detail ?? `Documento indisponível (${response.status})`);
       }
       const url = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "proposta-OZ.pdf"; anchor.click();
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = kind === "pdf" ? "proposta-OZ.pdf" : "proposta-OZ.docx"; anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    finally { setBusy(""); }
   }
-  return <div className="pdf-download-row"><div><b>Proposta completa em PDF</b><small>Documento com enquadramento, mapeamento de patologias, ensaios codificados, honorários e condições.</small></div><button className="secondary" onClick={download} disabled={busy}>{busy ? "A preparar…" : "Transferir PDF ↓"}</button></div>;
+  return <div className="pdf-download-row"><div><b>Proposta completa</b><small>Word editável (formato das propostas OZ) ou PDF.</small></div><div style={{ display: "flex", gap: 8 }}><button className="secondary" onClick={() => void download("docx")} disabled={Boolean(busy)}>{busy === "docx" ? "A preparar…" : "Transferir Word ↓"}</button><button className="secondary" onClick={() => void download("pdf")} disabled={Boolean(busy)}>{busy === "pdf" ? "A preparar…" : "Transferir PDF ↓"}</button></div></div>;
 }
-
 function MqtPanel({ token, detail, refresh, setError, setNotice }: {
   token: string; detail: Detail; refresh: () => void; setError: (s: string) => void; setNotice: (s: string) => void;
 }) {
@@ -540,21 +570,84 @@ function MqtPanel({ token, detail, refresh, setError, setNotice }: {
   })}</tbody></table></div><div className="version-line">Os itens importados começam com preço zero e exigem validação de preço e correspondência técnica.</div></section>;
 }
 
+type KbKind = "pathology" | "cause" | "test" | "solution";
+type KbLinked = Exclude<KbKind, "pathology">;
+const KB_KEY: Record<KbLinked, string> = { cause: "causes", test: "tests", solution: "solutions" };
+const KB_PLURAL: Record<KbLinked, string> = { cause: "Causas", test: "Ensaios", solution: "Soluções" };
+const KB_SINGULAR: Record<KbKind, string> = { pathology: "Patologia", cause: "Causa", test: "Ensaio", solution: "Solução" };
+
 function KnowledgePage({ token }: { token: string }) {
   const [knowledge, setKnowledge] = useState<Knowledge | null>(null);
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("all");
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState<{ kind: KbKind; code: string } | null>(null);
   useEffect(() => { void api<Knowledge>(token, "/api/knowledge").then(setKnowledge).catch((e) => setError((e as Error).message)); }, [token]);
-  const pathologies = (knowledge?.pathologies ?? []).filter((row) => {
+
+  const toMap = (rows?: Array<Record<string, any>>) => new Map<string, Record<string, any>>((rows ?? []).map((row) => [String(row.code), row]));
+  const maps: Record<KbKind, Map<string, Record<string, any>>> = {
+    pathology: toMap(knowledge?.pathologies), cause: toMap(knowledge?.causes), test: toMap(knowledge?.tests), solution: toMap(knowledge?.solutions),
+  };
+  const codesOf = (row: Record<string, any>, kind: KbLinked): string[] => ((row[KB_KEY[kind]] ?? []) as unknown[]).map(String);
+  const pathologyList = knowledge?.pathologies ?? [];
+  const pathologies = pathologyList.filter((row) => {
     const text = `${row.code} ${row.group_name} ${row.name}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (group === "all" || row.group_name === group);
   });
-  const groups = Array.from(new Set((knowledge?.pathologies ?? []).map((row) => row.group_name))).sort();
-  const references: Array<{ label: string; rows: Array<Record<string, any>> }> = knowledge ? [
-    { label: "Ensaios", rows: knowledge.tests }, { label: "Causas", rows: knowledge.causes }, { label: "Soluções", rows: knowledge.solutions },
-  ] : [];
-  return <><section className="welcome-row"><div><p className="eyebrow">CONSULTA TÉCNICA</p><h1>Base de conhecimento</h1><p className="subhead">Referências para apoiar a análise de patologias, ensaios e recomendações.</p></div><span className="count-pill">{knowledge ? pathologies.length + " patologias" : "A carregar…"}</span></section>{error && <div className="inline-error">{error}</div>}<section className="panel knowledge-panel"><div className="toolbar"><label className="search-box"><span>⌕</span><input placeholder="Pesquisar patologia, código ou grupo…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">Todos os grupos</option>{groups.map((name) => <option key={name}>{name}</option>)}</select></div>{!knowledge ? <div className="empty-state"><span className="loader" />A carregar a base técnica…</div> : <><div className="knowledge-grid">{pathologies.map((row) => <article className="knowledge-card" key={row.code}><div className="knowledge-card-top"><span>{row.code}</span>{row.not_in_manual && <span className="category-chip">Complementar</span>}</div><h3>{row.name}</h3><p>{row.group_name}</p><div className="severity-range">Severidade de referência <b>{row.sev_min}–{row.sev_max}</b></div></article>)}</div>{pathologies.length === 0 && <div className="empty-state">Não foram encontradas patologias.</div>}</>}</section>{knowledge && <div className="knowledge-reference-grid">{references.map(({ label, rows }) => <section className="panel ref-panel" key={label}><p className="eyebrow">CATÁLOGO</p><h2>{label}</h2>{rows.slice(0, 7).map((row) => <div className="ref-row" key={row.code}><b>{row.code}</b><span>{row.name}</span></div>)}<small>{rows.length} referências</small></section>)}</div>}</>;
+  const groups = Array.from(new Set(pathologyList.map((row) => row.group_name))).sort();
+  const isSelected = (kind: KbKind, code: string) => selected?.kind === kind && selected.code === code;
+  const pick = (kind: KbKind, code: string) => setSelected({ kind, code });
+
+  const linkList = (kind: KbKind, codes: string[]) => codes.length
+    ? <ul>{codes.map((code) => <li key={code}><button type="button" className="text-button" onClick={() => pick(kind, code)}><code>{code}</code> {maps[kind].get(code)?.name ?? "(sem nome na base)"}</button></li>)}</ul>
+    : <small>Sem ligações na base.</small>;
+
+  const renderDetail = () => {
+    if (!selected) return null;
+    const { kind, code } = selected;
+    const item = maps[kind].get(code);
+    if (!item) return null;
+    if (kind === "pathology") {
+      return <>
+        <p>{item.group_name} · Severidade de referência {item.sev_min}–{item.sev_max}{item.not_in_manual ? " · complementar" : ""}</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+          {(["cause", "test", "solution"] as KbLinked[]).map((other) => <div key={other}><b>{KB_PLURAL[other]}</b>{linkList(other, codesOf(item, other))}</div>)}
+        </div>
+      </>;
+    }
+    const linked = pathologyList.filter((row) => codesOf(row, kind).includes(code));
+    const others = (["cause", "test", "solution"] as KbLinked[]).filter((other) => other !== kind);
+    return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+      <div><b>Patologias ligadas ({linked.length})</b>{linkList("pathology", linked.map((row) => String(row.code)))}</div>
+      {others.map((other) => {
+        const codes = Array.from(new Set(linked.flatMap((row) => codesOf(row, other))));
+        return <div key={other}><b>{KB_PLURAL[other]} nessas patologias ({codes.length})</b>{linkList(other, codes)}</div>;
+      })}
+    </div>;
+  };
+  const detail = renderDetail();
+  const selectedItem = selected ? maps[selected.kind].get(selected.code) : undefined;
+
+  return <>
+    <section className="welcome-row"><div><p className="eyebrow">CONSULTA TÉCNICA</p><h1>Base de conhecimento</h1><p className="subhead">Clica numa patologia, causa, ensaio ou solução para ver as ligações entre elas.</p></div><span className="count-pill">{knowledge ? pathologies.length + " patologias" : "A carregar…"}</span></section>
+    {error && <div className="inline-error">{error}</div>}
+    {selected && selectedItem && detail && <section className="panel" style={{ position: "sticky", top: 0, zIndex: 5, maxHeight: "45vh", overflowY: "auto" }}>
+      <div className="panel-heading"><div><p className="eyebrow">{KB_SINGULAR[selected.kind].toUpperCase()} · {selected.code}</p><h2>{selectedItem.name}</h2></div><button className="secondary" onClick={() => setSelected(null)}>Fechar</button></div>
+      {detail}
+    </section>}
+    <section className="panel knowledge-panel"><div className="toolbar"><label className="search-box"><span>⌕</span><input placeholder="Pesquisar patologia, código ou grupo…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">Todos os grupos</option>{groups.map((name) => <option key={name}>{name}</option>)}</select></div>
+      {!knowledge ? <div className="empty-state"><span className="loader" />A carregar a base técnica…</div> : <>
+        <div className="knowledge-grid">{pathologies.map((row) => <article className="knowledge-card" key={row.code} role="button" tabIndex={0} onClick={() => pick("pathology", String(row.code))} onKeyDown={(e) => { if (e.key === "Enter") pick("pathology", String(row.code)); }} style={{ cursor: "pointer", outline: isSelected("pathology", String(row.code)) ? "2px solid #4a6b57" : undefined }}><div className="knowledge-card-top"><span>{row.code}</span>{row.not_in_manual && <span className="category-chip">Complementar</span>}</div><h3>{row.name}</h3><p>{row.group_name}</p><div className="severity-range">Severidade de referência <b>{row.sev_min}–{row.sev_max}</b></div></article>)}</div>
+        {pathologies.length === 0 && <div className="empty-state">Não foram encontradas patologias.</div>}
+      </>}
+    </section>
+    {knowledge && <div className="knowledge-reference-grid">{(["test", "cause", "solution"] as KbLinked[]).map((kind) => {
+      const rows = knowledge[KB_KEY[kind]] ?? [];
+      return <section className="panel ref-panel" key={kind}><p className="eyebrow">CLICA PARA VER AS PATOLOGIAS LIGADAS</p><h2>{KB_PLURAL[kind]}</h2>
+        <div style={{ maxHeight: 360, overflowY: "auto" }}>{rows.map((row) => <button type="button" key={row.code} className="ref-row" onClick={() => pick(kind, String(row.code))} style={{ cursor: "pointer", width: "100%", textAlign: "left", border: "none", font: "inherit", background: isSelected(kind, String(row.code)) ? "#e8efe9" : undefined }}><b>{row.code}</b><span>{row.name}</span></button>)}</div>
+        <small>{rows.length} referências</small></section>;
+    })}</div>}
+  </>;
 }
 
 function ProposalLibraryPage({ token, onOpen, onNew }: { token: string; onOpen: (id: string) => void; onNew: () => void }) {
@@ -563,7 +656,8 @@ function ProposalLibraryPage({ token, onOpen, onNew }: { token: string; onOpen: 
   const [sourceFilter, setSourceFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [progress, setProgress] = useState("");
   const [title, setTitle] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -582,20 +676,40 @@ function ProposalLibraryPage({ token, onOpen, onNew }: { token: string; onOpen: 
   async function submitSearch(event: FormEvent) {
     event.preventDefault(); await load(query.trim());
   }
+    function selectLibraryFiles(selected: FileList | null) {
+    const next = Array.from(selected ?? []);
+    if (next.length > 30) { setError("Podes enviar até 30 ficheiros de cada vez."); return; }
+    const tooBig = next.find((item) => item.size > 15 * 1024 * 1024);
+    if (tooBig) { setError(`${tooBig.name} excede o limite de 15 MB.`); return; }
+    setError(""); setFiles(next);
+  }
   async function upload(event: FormEvent) {
     event.preventDefault();
-    if (!file) return;
-    setWorking(true); setError(""); setNotice("");
-    try {
-      const form = new FormData(); form.append("file", file); form.append("title", title);
-      await api(token, "/api/proposal-library", { method: "POST", body: form });
-      setFile(null); setTitle("");
-      const input = document.getElementById("proposal-library-file") as HTMLInputElement | null;
-      if (input) input.value = "";
-      setNotice("Proposta guardada na biblioteca privada e indexada para pesquisa.");
-      await load(query.trim());
-    } catch (e) { setError((e as Error).message); }
-    finally { setWorking(false); }
+    if (!files.length) return;
+    setWorking(true); setError(""); setNotice(""); setProgress("");
+    const failed: Array<{ name: string; reason: string }> = [];
+    let done = 0;
+    for (const [index, current] of files.entries()) {
+      setProgress(`A enviar ${index + 1} de ${files.length}: ${current.name}`);
+      try {
+        const form = new FormData();
+        form.append("file", current);
+        form.append("title", files.length === 1 ? title : "");
+        await api(token, "/api/proposal-library", { method: "POST", body: form });
+        done += 1;
+      } catch (e) {
+        failed.push({ name: current.name, reason: (e as Error).message });
+      }
+    }
+    setProgress("");
+    const input = document.getElementById("proposal-library-file") as HTMLInputElement | null;
+    if (input) input.value = "";
+    setFiles(failed.length ? files.filter((item) => failed.some((f) => f.name === item.name)) : []);
+    if (!failed.length) setTitle("");
+    if (done) setNotice(`${done} ficheiro(s) guardado(s) na biblioteca privada e indexado(s) para pesquisa.`);
+    if (failed.length) setError(`${failed.length} ficheiro(s) falharam: ` + failed.map((f) => `${f.name} (${f.reason})`).join(" · "));
+    await load(query.trim());
+    setWorking(false);
   }
   async function openReference(reference: ProposalReference) {
     if (reference.source === "generated" && reference.request_id) { onOpen(reference.request_id); return; }
@@ -638,7 +752,52 @@ function ProposalLibraryPage({ token, onOpen, onNew }: { token: string; onOpen: 
   return <>
     <section className="welcome-row"><div><p className="eyebrow">CONSULTA DE TRABALHOS ANTERIORES</p><h1>Base de propostas</h1><p className="subhead">Organiza propostas por número, cliente, obra, estado, valor e data.</p></div><button className="primary" onClick={onNew}>＋ Novo pedido</button></section>
     {error && <div className="inline-error">{error}</div>}{notice && <div className="inline-success">{notice}</div>}
-    <section className="panel library-upload-panel"><div className="panel-heading"><div><h2>Adicionar proposta existente</h2><p>PDF, Word, Excel, TXT, CSV ou email até 15 MB.</p></div><span className="secure-label"><i /> Privado</span></div><form className="library-upload-form" onSubmit={upload}><label>Título de consulta (opcional)<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: Diagnóstico elétrico — edifício Matola" /></label><label className="upload-zone"><span className="upload-icon">↑</span><span><b>{file?.name ?? "Selecionar proposta anterior"}</b><small>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : "O ficheiro e o texto extraído ficam no teu espaço privado."}</small></span><input id="proposal-library-file" type="file" accept=".pdf,.docx,.xlsx,.txt,.csv,.eml" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><button className="secondary" disabled={working || !file}>{working ? "A guardar…" : "Adicionar à biblioteca"}</button></form></section>
+    <section className="panel library-upload-panel"><div className="panel-heading"><div><h2>Adicionar proposta existente</h2><p>PDF, Word, Excel, TXT, CSV ou email até 15 MB.</p></div><span className="secure-label"><i /> Privado</span></div><form className="library-upload-form" onSubmit={upload}><label>Título de consulta (opcional, só com 1 ficheiro)<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: Diagnóstico elétrico — edifício Matola" /></label><label className="upload-zone"><span className="upload-icon">↑</span><span><b>{progress || (files.length ? `${files.length} ficheiro(s) selecionado(s)` : "Selecionar propostas anteriores (vários ficheiros)")}</b><small>{files.length ? files.map((item) => `${item.name} (${(item.size / 1024 / 1024).toFixed(1)} MB)`).join(" · ") : "Até 30 ficheiros de cada vez, 15 MB cada. Ficam no teu espaço privado."}</small></span><input id="proposal-library-file" type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.csv,.eml" onChange={(e) => { selectLibraryFiles(e.target.files); e.currentTarget.value = ""; }} disabled={working} /></label><button className="secondary" disabled={working || !files.length}>{working ? "A guardar…" : files.length > 1 ? `Adicionar ${files.length} à biblioteca` : "Adicionar à biblioteca"}</button></form></section>
     <section className="panel proposal-library-results"><div className="panel-heading"><div><h2>Registos da biblioteca</h2><p>Propostas geradas e documentos anteriores, com pesquisa e filtros.</p></div><span className="count-pill">{visibleReferences.length} de {references.length} registos</span></div><form className="toolbar catalog-toolbar" onSubmit={submitSearch}><label className="search-box"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="N.º da proposta, cliente, obra, serviço ou localização…" /></label><button className="secondary" disabled={working}>{working ? "A pesquisar…" : "Pesquisar"}</button><select aria-label="Tipo de registo" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}><option value="all">Todos os registos</option><option value="generated">Propostas geradas</option><option value="uploaded">Ficheiros carregados</option></select><select aria-label="Estado da proposta" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="all">Todos os estados</option>{STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}</select><select aria-label="Ordenar propostas" value={sortBy} onChange={(e) => setSortBy(e.target.value)}><option value="newest">Mais recentes</option><option value="oldest">Mais antigas</option><option value="number">N.º da proposta</option><option value="client">Cliente A–Z</option><option value="value">Valor mais alto</option></select></form>{working && !references.length ? <div className="empty-state"><span className="loader" />A carregar a base de propostas…</div> : visibleReferences.length ? <div className="table-scroll proposal-catalog-scroll"><table className="proposal-catalog-table"><thead><tr><th>N.º / TIPO</th><th>CLIENTE</th><th>OBJETO / OBRA</th><th>LOCALIZAÇÃO</th><th>ESTADO</th><th>VALOR C/ IVA</th><th>DATA</th><th>AÇÕES</th></tr></thead><tbody>{visibleReferences.map((reference) => <tr key={`${reference.source}-${reference.id}`}><td><b className="catalog-proposal-no">{reference.proposal_no || "Sem número"}</b><small>{reference.source === "generated" ? "Gerada" : reference.file_name || "Importada"}</small></td><td><b>{reference.client_name || "Cliente por identificar"}</b><small>{reference.source === "uploaded" ? "Documento carregado" : "Cliente"}</small></td><td><b>{reference.project_name || reference.title}</b><small>{reference.objective || reference.summary || "Sem descrição do objeto"}</small></td><td>{reference.location || "—"}</td><td><span className={reference.status ? statusClass(reference.status) : "catalog-imported-status"}><i />{reference.status ? STATUS_LABEL[reference.status] || reference.status : "Importada"}</span></td><td>{reference.total != null ? money(Number(reference.total)) : "—"}</td><td>{displayDate(reference.created_at)}</td><td><div className="catalog-actions"><button className="secondary" disabled={working} onClick={() => void openReference(reference)}>{reference.source === "uploaded" ? "Consultar" : "Abrir"}</button><button className="danger-button" disabled={working} onClick={() => void removeReference(reference)}>Apagar</button></div></td></tr>)}</tbody></table></div> : <div className="empty-state"><div className="empty-icon">▤</div><h3>{references.length || query || statusFilter !== "all" || sourceFilter !== "all" ? "Sem registos com estes filtros" : "A biblioteca está vazia"}</h3><p>{references.length || query || statusFilter !== "all" || sourceFilter !== "all" ? "Altera a pesquisa ou os filtros para veres outras propostas." : "As propostas geradas aparecem aqui automaticamente. Também podes carregar propostas anteriores."}</p></div>}</section>
   </>;
+}
+function ItemDetailPanel({ d }: { d?: ItemDetail }) {
+  if (!d) return <div className="small-empty">A carregar detalhe…</div>;
+  if (!d.linked) return <div className="technical-note">Esta linha não tem serviço do catálogo associado (por exemplo, veio da MQT). Não há detalhe para mostrar.</div>;
+  const groups = (d.resources ?? []).reduce<Record<string, NonNullable<ItemDetail["resources"]>>>((acc, r) => { (acc[r.type] ??= []).push(r); return acc; }, {});
+  const nothing = !d.note && !d.technical_basis && !d.duration && !d.labor?.length && !d.resources?.length && !d.tests?.length && !d.procedures?.length && !d.triggers?.length && !d.required_by?.length;
+  return <div className="item-detail">
+    {nothing && <p><b>Sem detalhe na base de dados.</b> Este serviço ainda não tem recursos, duração, ensaios ou procedimentos ligados.</p>}
+    {d.note && <p><b>Motivo e fonte.</b> {d.note}</p>}
+    {d.technical_basis && <p><b>Fundamento técnico.</b> {d.technical_basis}</p>}
+    {d.duration && <p><b>Duração prevista.</b> {d.duration.minutes} min{d.duration.team_size ? ` · equipa de ${d.duration.team_size}` : ""}{d.duration.condition ? ` · ${d.duration.condition}` : ""}{d.duration.condition_to_confirm ? " (condição por confirmar)" : ""}</p>}
+    {(d.labor?.length ?? 0) > 0 && <p><b>Mão-de-obra.</b> {d.labor!.map((l) => `${l.name}${l.quantity ? ` ×${l.quantity}` : ""}${l.role ? ` (${l.role})` : ""}`).join(" · ")}</p>}
+    {Object.entries(groups).map(([type, rows]) => <div key={type}><b>{type}</b><ul>{rows.map((r, i) => <li key={i}>{r.name}{r.quantity ? ` ×${r.quantity}` : ""}{r.role ? ` — ${r.role}` : ""}{r.condition ? ` · se: ${r.condition}` : ""}{r.external ? " · externo" : ""}{r.rentable ? " · alugável" : ""}{r.needs_calibration ? " · requer calibração" : ""}</li>)}</ul></div>)}
+    {(d.tests?.length ?? 0) > 0 && <p><b>Ensaios associados.</b> {d.tests!.map((t) => `${t.code}${t.name ? ` ${t.name}` : ""}`).join(" · ")}</p>}
+    {(d.procedures?.length ?? 0) > 0 && <p><b>Procedimentos.</b> {d.procedures!.map((p) => `${p.code} ${p.title}`).join(" · ")}</p>}
+    {(d.triggers?.length ?? 0) > 0 && <div><b>Pode desencadear</b><ul>{d.triggers!.map((t, i) => <li key={i}>{t.name || t.service_id} ×{t.quantity}{t.relation ? ` (${t.relation})` : ""}{t.note ? ` — ${t.note}` : ""}</li>)}</ul></div>}
+    {(d.required_by?.length ?? 0) > 0 && <p><b>Incluído por causa de.</b> {d.required_by!.map((r) => `${r.name || r.service_id}${r.note ? ` — ${r.note}` : ""}`).join(" · ")}</p>}
+  </div>;
+}
+function Highlight({ text, words }: { text: string; words: string[] }) {
+  const set = new Set(words.map((w) => w.toLowerCase()));
+  return <>{text.split(/([A-Za-zÀ-ÿ0-9]+)/).map((part, i) => set.has(part.toLowerCase()) ? <mark key={i}>{part}</mark> : <Fragment key={i}>{part}</Fragment>)}</>;
+}
+
+function PathologyWhy({ candidate }: { candidate: any }) {
+  const why = candidate.reasons;
+  const words: string[] = why?.matched_words ?? [];
+  return <div className="pathology-evidence">
+    <b>Porque foi selecionada</b>
+    {why ? <>
+      <p><strong>Fiabilidade {why.reliability}</strong> · {why.channel_label}{why.compared_with?.label ? ` · «${why.compared_with.label}»` : ""}</p>
+      <p>{why.explanation}</p>
+      {words.length > 0 && <p>Palavras do pedido que coincidem: {words.map((w) => <span className="category-chip" key={w}>{w}</span>)}</p>}
+      {why.missing_words?.length > 0 && <p>Palavras da designação que <u>não</u> aparecem no pedido: {why.missing_words.join(", ")}.</p>}
+    </> : <p>Análise antiga sem justificação. Usa «Reanalisar pedido» para a obter.</p>}
+    {candidate.evidence?.length > 0
+      ? <><b>Excertos do pedido</b>{candidate.evidence.map((item: string, index: number) => <p key={`${candidate.code}-ev-${index}`}>“<Highlight text={item} words={words} />”</p>)}</>
+      : <p>Nenhum excerto do pedido sustenta esta correspondência.</p>}
+  </div>;
+}
+
+function WeakMatches({ items }: { items: any[] }) {
+  return <details className="technical-note"><summary>{items.length} correspondência(s) fraca(s) não usada(s) no orçamento — ver porquê</summary>
+    {items.map((c) => <div key={c.code} className="pathology-evidence"><b>{c.code} {c.name}</b> · {c.match_percent}%<p>{c.reasons?.explanation}</p></div>)}
+  </details>;
 }

@@ -18,8 +18,14 @@ from app.config import settings
 from app.documents import MAX_UPLOAD_BYTES, extract_mqt_rows, extract_upload, image_mime_type
 from app.email_intake import looks_like_email
 from app.ai.orchestrator import orchestrate_request_analysis, reconcile_missing
-from app.services.field_activities import run_field_activity_engine
+from app.services.field_activities import _build_technical_basis, run_field_activity_engine
+from app.services.prior_proposals import add_prior_proposal_activities
+from app.services.item_details import build_item_details
+from app.services.pdf_knowledge import add_pdf_activities_to_proposal
 from app.services.proposal_pdf import build_proposal_pdf
+from app.services.proposal_docx import build_proposal_docx
+from app.services.material_guard import detect_materials, is_timber_only, request_text, service_is_concrete_specific
+from app.services.service_overlaps import resolve_overlaps
 from app.supabase_rest import rest
 from app.storage import signed_document_url, upload_document
 from app.technical_diagnosis import analyze_technical_diagnosis
@@ -338,7 +344,22 @@ async def download_proposal_pdf(request_id: str, user: CurrentUser = Depends(cur
         "Content-Disposition": f'attachment; filename="OZ_{safe_number}.pdf"',
     })
 
-
+@router.get("/proposals/{request_id}/docx")
+async def download_proposal_docx(request_id: str, user: CurrentUser = Depends(current_user)) -> Response:
+    request_rows, proposals, analyses = await asyncio.gather(
+        rest(user.token, "proposal_requests", params={"id": f"eq.{request_id}", "limit": "1"}),
+        rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"}),
+        rest(user.token, "proposal_analysis", params={"request_id": f"eq.{request_id}", "limit": "1"}),
+    )
+    if not request_rows or not proposals:
+        raise HTTPException(404, "Gera uma proposta antes de transferir o Word.")
+    items = await rest(user.token, "proposal_items", params={"proposal_id": f"eq.{proposals[0]['id']}",
+                                                               "order": "position.asc", "limit": "5000"})
+    data = build_proposal_docx(request_rows[0], proposals[0], items, analyses[0] if analyses else None)
+    safe_number = re.sub(r"[^A-Za-z0-9_-]", "-", proposals[0]["proposal_no"])
+    return Response(content=data,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f'attachment; filename="OZ_{safe_number}.docx"'})
 @router.patch("/proposals/{request_id}/fields")
 async def update_request_fields(request_id: str, update: FieldsUpdate,
                                 user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
@@ -484,13 +505,75 @@ async def list_services(user: CurrentUser = Depends(current_user)) -> list[dict[
 async def suggest_scope_items(token: str, owner_id: str, proposal_id: str, request_id: str,
                               fields: dict[str, Any], raw_text: str,
                               technical: dict[str, Any] | None) -> dict[str, Any]:
-    """Motor de Atividades de Campo: acrescenta atividades BASE e CONDICIONAIS (com consequências).
+    """Ordem: 1) propostas anteriores, 2) pedido e PDFs, 3) base de conhecimento.
+    Depois aplica a guarda de material e a resolução de sobreposições."""
+    try:
+        prior = await add_prior_proposal_activities(token, proposal_id, request_id)
+    except Exception:
+        logger.exception("Consulta de propostas anteriores falhou para o pedido %s", request_id)
+        prior = {"added": [], "flags": [{
+            "severity": "WARNING", "code": "PRIOR_SOURCE",
+            "message": "A consulta das propostas anteriores falhou; as atividades vieram de outras fontes."}]}
+    try:
+        pdf = await add_pdf_activities_to_proposal(token, proposal_id, request_id, fields, raw_text)
+    except Exception:
+        logger.exception("Consulta de PDFs falhou para o pedido %s", request_id)
+        pdf = {"added": [], "flags": [{
+            "severity": "WARNING", "code": "PDF_SOURCE",
+            "message": "A consulta dos PDFs falhou; as atividades vieram de outras fontes."}]}
+    result = await run_field_activity_engine(token, owner_id, proposal_id, request_id, fields, raw_text, technical)
 
-    Ambas entram no valor total da proposta. As soluções ficam só como hipóteses internas.
-    Nunca remove linhas, nunca inventa preços e nunca repete serviços já existentes.
-    """
-    return await run_field_activity_engine(token, owner_id, proposal_id, request_id, fields, raw_text, technical)
+    earlier = set(prior["added"]) | set(pdf["added"])
+    by_id = {str(a.get("service_id")): a for a in result.get("activities", [])}
+    for sid in sorted(sid for sid, a in by_id.items() if a.get("activity_class") == "BASE" and sid in earlier):
+        try:
+            await rest(token, "proposal_items", method="PATCH",
+                       params={"proposal_id": f"eq.{proposal_id}", "service_id": f"eq.{sid}"},
+                       body={"activity_class": "BASE", "trigger_condition": None,
+                             "technical_basis": _build_technical_basis(by_id[sid])},
+                       prefer="return=minimal")
+        except Exception:
+            logger.exception("Não foi possível promover %s a BASE na proposta %s", sid, proposal_id)
 
+    added_all = prior["added"] + pdf["added"] + result["added"]
+    flags = prior["flags"] + pdf["flags"] + result["flags"]
+
+    # Guarda de material: num pedido só de madeira, desativa (não apaga) serviços próprios de betão.
+    materials = detect_materials(request_text(fields, raw_text))
+    if is_timber_only(materials) and added_all:
+        added_set = set(added_all)
+        disabled: list[str] = []
+        try:
+            rows = await rest(token, "proposal_items", params={
+                "proposal_id": f"eq.{proposal_id}", "select": "id,name,service_id,internal_note", "limit": "5000"})
+            for row in rows if isinstance(rows, list) else []:
+                if str(row.get("service_id") or "") in added_set and service_is_concrete_specific(row.get("name")):
+                    note = "DESATIVADO AUTOMATICAMENTE: serviço próprio de betão num pedido de estruturas de madeira."
+                    await rest(token, "proposal_items", method="PATCH", params={"id": f"eq.{row['id']}"},
+                               body={"enabled": False,
+                                     "internal_note": f"{note} | {row.get('internal_note') or ''}"[:4000]},
+                               prefer="return=minimal")
+                    disabled.append(str(row.get("name")))
+        except Exception:
+            logger.exception("Guarda de material falhou para a proposta %s", proposal_id)
+        if disabled:
+            flags.append({"severity": "WARNING", "code": "MATERIAL_GUARD", "message": (
+                f"{len(disabled)} atividade(s) próprias de betão foram desativadas, por o pedido ser de madeira: "
+                + "; ".join(disabled[:6]) + ". Podes reativá-las na caixa de seleção.")})
+
+    # Sobreposições: só um serviço de cada grupo (ver service_overlaps.py) fica ativo.
+    try:
+        overlap_notes = await resolve_overlaps(token, proposal_id, set(added_all))
+    except Exception:
+        logger.exception("Resolução de sobreposições falhou para a proposta %s", proposal_id)
+        overlap_notes = []
+    if overlap_notes:
+        flags.append({"severity": "WARNING", "code": "OVERLAP_GUARD", "message": (
+            "Serviços que se sobrepõem foram desativados (podes reativá-los): " + " | ".join(overlap_notes) + ".")})
+
+    result["added"] = added_all
+    result["flags"] = flags
+    return result
 
 @router.post("/proposals/{request_id}/generate")
 async def generate_proposal(request_id: str,
@@ -543,6 +626,9 @@ async def suggest_scope(request_id: str, user: CurrentUser = Depends(current_use
         message = "As atividades de campo previstas já estão na proposta."
     if result["hypotheses"]:
         message += f" {result['hypotheses']} hipótese(s) de solução guardada(s) só para consulta interna."
+    for flag in flags:
+        if flag.get("code") in {"PRIOR_SUMMARY", "PRIOR_SOURCE", "PDF_SUMMARY", "PDF_SOURCE", "MATERIAL_GUARD", "OVERLAP_GUARD"}:
+            message += " " + flag["message"]
     if unmapped:
         names = "; ".join(f"{u.get('service_id') or u.get('code') or ''} {u.get('name') or ''}".strip() for u in unmapped[:6])
         message += f" Atenção: {len(unmapped)} item(ns) sem serviço no catálogo ({names}) — acrescenta-os manualmente."
@@ -556,6 +642,32 @@ async def suggest_scope(request_id: str, user: CurrentUser = Depends(current_use
     return {"added": added, "unmapped": unmapped, "flags": flags, "message": message,
             "price_pending": price_pending, "price_review": result.get("price_review") or []}
 
+@router.post("/proposals/{request_id}/rebuild-scope")
+async def rebuild_scope(request_id: str, user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    """Refaz o diagnóstico e o âmbito: apaga as linhas sugeridas automaticamente (as que têm
+    classe de atividade) e as hipóteses de solução, e volta a sugerir a partir do diagnóstico atual.
+    Os serviços adicionados à mão e as linhas da MQT ficam."""
+    request_rows = await rest(user.token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "status,extracted_fields,raw_text", "limit": "1"})
+    if not request_rows:
+        raise HTTPException(404, "Pedido não encontrado.")
+    if request_rows[0].get("status") == "CANCELLED":
+        raise HTTPException(409, "Este pedido está cancelado. Reativa-o antes de alterar os serviços.")
+    proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    if not proposals:
+        raise HTTPException(409, "Gera a proposta antes de refazer o âmbito.")
+    fields = request_rows[0].get("extracted_fields") or {}
+    diagnosis = await analyze_technical_diagnosis(request_rows[0].get("raw_text") or "", fields, user.token)
+    await rest(user.token, "proposal_analysis", method="PATCH", params={"request_id": f"eq.{request_id}"},
+               body={"extracted": {**fields, "technical_diagnosis": diagnosis}}, prefer="return=minimal")
+    await rest(user.token, "proposal_items", method="DELETE", params={
+        "proposal_id": f"eq.{proposals[0]['id']}", "activity_class": "not.is.null"})
+    try:
+        await rest(user.token, "proposal_solution_hypotheses", method="DELETE",
+                   params={"request_id": f"eq.{request_id}"})
+    except Exception:
+        logger.exception("Não foi possível limpar as hipóteses de solução do pedido %s", request_id)
+    return await suggest_scope(request_id, user)
 
 @router.post("/proposals/{request_id}/items")
 async def add_item(request_id: str, item: ItemCreate,
@@ -644,6 +756,17 @@ async def delete_item(item_id: str, user: CurrentUser = Depends(current_user)) -
     if rows:
         await mark_pricing(user.token, rows[0]["proposal_id"])
     return {"deleted": True}
+
+
+@router.get("/proposals/{request_id}/item-details")
+async def proposal_item_details(request_id: str, user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    proposals = await rest(user.token, "proposals", params={"request_id": f"eq.{request_id}", "limit": "1"})
+    if not proposals:
+        return {}
+    items = await rest(user.token, "proposal_items", params={
+        "proposal_id": f"eq.{proposals[0]['id']}",
+        "select": "id,service_id,name,quantity,internal_note", "limit": "5000"})
+    return await build_item_details(user.token, items)
 
 
 @router.post("/proposals/{request_id}/visits")

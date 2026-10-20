@@ -292,8 +292,9 @@ def _rule_matches(rule: dict[str, Any], *, corpus: str, pathology_groups: set[st
 def _normalise_list(value: Any) -> list[Any]:
     if value is None:
         return []
-    return value if isinstance(value, list) else [value]
-
+    if isinstance(value, (list, tuple, set)) or hasattr(value, "__next__"):
+        return list(value)
+    return [value]
 
 def _build_corpus(fields: dict[str, Any], raw_text: str, technical: dict[str, Any] | None) -> str:
     return fold(" ".join((raw_text, client_text(fields), client_text(technical or {}))))

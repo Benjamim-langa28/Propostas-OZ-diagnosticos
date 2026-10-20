@@ -32,20 +32,41 @@ TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 def _metadata(filename: str, content: str, requested_title: str) -> dict[str, Any]:
     stem = PurePath(filename).stem.strip()
-    first_line = next((line.strip(" #\t") for line in content.splitlines() if line.strip()), "")
-    title = requested_title.strip() or (first_line[:180] if 3 <= len(first_line) <= 180 else stem)
+    flat = " ".join(content.split())
     email_fields = parse_email_request(content) if looks_like_email(content) else {}
+
+    number = re.search(r"Proposta\s*N[ºo°]\.?\s*:?\s*(\d{1,4}\s*/\s*\d{2}(?:\s*-\s*\d{2})?)", flat, re.I)
+    if number:
+        proposal_no = re.sub(r"\s+", "", number.group(1))
+    else:
+        alt = re.search(r"\bOZ[-\s]\d{4}[-/]\d{3,6}\b", flat, re.I)
+        proposal_no = alt.group(0).strip() if alt else None
+
+    subject = re.search(r"V\.?\s*solicitação\s*:\s*[“\"]([^”\"]{5,220})[”\"]", flat, re.I)
+    service = re.search(r"Proposta de prestação de serviços de ([^.]{10,220})", flat, re.I)
+    first_line = next((line.strip(" #\t") for line in content.splitlines()
+                       if len(line.strip()) >= 4 and line.strip().lower() not in {"e-mail", "email"}
+                       and not line.strip().lower().startswith("escritório")), "")
+    title = (requested_title.strip() or (subject.group(1).strip() if subject else "")
+             or (service.group(1).strip() if service else "")
+             or (first_line[:180] if 3 <= len(first_line) <= 180 else stem))
+
+    para = re.search(r"Para\s*\(To\)\s*:\s*(.{2,100}?)\s+(?:Tel\.|À\s*At\.)", flat, re.I)
     client_match = re.search(r"(?:cliente|empresa|client|company)\s*:\s*([^\n|]{2,160})", content, re.I)
-    location_match = re.search(r"(?:localização|localizacao|morada da obra|local)\s*:\s*([^\n|]{2,160})", content, re.I)
+    location_match = re.search(r"(?:localização|localizacao|morada da obra)\s*:\s*([^\n|]{2,160})", content, re.I)
+    client_name = ((para.group(1).strip() if para else None) or email_fields.get("client_name")
+                   or (client_match.group(1).strip() if client_match else None))
+
+    # O resumo começa no "Objeto": o cabeçalho da empresa não deve entrar na comparação de semelhança.
+    body = flat.split("1. Objeto", 1)[1] if "1. Objeto" in flat else flat
     project_type = (email_fields.get("categories") or [None])[0]
-    proposal_no_match = re.search(r"\b(?:OZ[-\s]?)?\d{4}[-/]\d{3,6}\b", content, re.I)
     return {
         "title": title[:180],
-        "client_name": email_fields.get("client_name") or (client_match.group(1).strip() if client_match else None),
+        "client_name": client_name,
         "project_type": project_type,
         "location": email_fields.get("location") or (location_match.group(1).strip() if location_match else None),
-        "proposal_no": proposal_no_match.group(0).strip() if proposal_no_match else None,
-        "summary": " ".join(content.split())[:1000],
+        "proposal_no": proposal_no,
+        "summary": body.strip()[:1000],
         "tags": email_fields.get("categories") or [],
     }
 

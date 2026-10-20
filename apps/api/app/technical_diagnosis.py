@@ -15,6 +15,7 @@ import httpx
 
 from app.config import settings
 from app.supabase_rest import rest
+from app.services.material_guard import detect_materials
 
 
 STOP_WORDS = {
@@ -87,16 +88,57 @@ def normalize(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+WORD_RE = re.compile(r"[A-Za-zÀ-ÿ0-9]+")
+
+# Palavras que só dizem ONDE (local), não QUAL é o problema.
+STRUCTURAL_NOUNS = {"parede", "pavimento", "teto", "laje", "viga", "pilar", "cave", "estrutura",
+                    "estrutural", "elemento", "fachada", "cobertura", "piso", "obra", "zona"}
+
+CHANNEL_LABEL = {
+    "name_phrase": "A designação da patologia aparece no pedido",
+    "alias": "O pedido usa uma expressão associada a esta patologia",
+    "name_words": "Coincidência de palavras com a designação da patologia",
+    "cause": "Coincidência com uma CAUSA ligada à patologia",
+    "test": "Coincidência com um ENSAIO ligado à patologia",
+    "solution": "Coincidência com uma SOLUÇÃO ligada à patologia",
+    "fuzzy": "Semelhança aproximada de escrita",
+}
+
+
+def _canon(word: str) -> str | None:
+    plain = normalize(word)
+    if not plain:
+        return None
+    token = TOKEN_SYNONYMS.get(plain, plain)
+    if len(token) > 4 and token.endswith("s"):
+        token = token[:-1]
+    return token if len(token) > 2 and token not in STOP_WORDS else None
+
+
 def _tokens(value: Any) -> set[str]:
-    words = normalize(value).split()
-    result = set()
-    for word in words:
-        token = TOKEN_SYNONYMS.get(word, word)
-        if len(token) > 4 and token.endswith("s"):
-            token = token[:-1]
-        if len(token) > 2 and token not in STOP_WORDS:
-            result.add(token)
-    return result
+    return {t for t in (_canon(w) for w in normalize(value).split()) if t}
+
+
+def _surface_hits(text: str, tokens: set[str]) -> list[str]:
+    """Palavras tal como estão escritas no texto que correspondem aos tokens."""
+    found: list[str] = []
+    for match in WORD_RE.finditer(text or ""):
+        word = match.group(0)
+        if _canon(word) in tokens and word.lower() not in (f.lower() for f in found):
+            found.append(word)
+    return found
+
+
+def _window(sentence: str, words: list[str], limit: int = 240) -> str:
+    text = " ".join(sentence.split())
+    if len(text) <= limit:
+        return text
+    lowered = text.lower()
+    positions = [lowered.find(w.lower()) for w in words if w.lower() in lowered]
+    pos = min(positions) if positions else 0
+    start = max(0, pos - limit // 3)
+    end = min(len(text), start + limit)
+    return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
 
 
 def _contains_phrase(query: str, phrase: str) -> bool:
@@ -107,7 +149,7 @@ def _contains_phrase(query: str, phrase: str) -> bool:
 def _query_text(raw_text: str, fields: dict[str, Any]) -> str:
     parts = [raw_text]
     for key in ("objective", "request_type", "problem_type", "problem_summary", "symptom_locations",
-                "categories", "constraints", "requested_services"):
+                "requested_services"):
         value = fields.get(key)
         if isinstance(value, list):
             parts.extend(str(item) for item in value if item)
@@ -128,70 +170,156 @@ def _query_text(raw_text: str, fields: dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", text).strip()[:16000]
 
 
-def _sentence_evidence(query: str, labels: list[str], phrases: tuple[str, ...]) -> list[str]:
+def _sentence_evidence(query: str, tokens: set[str], phrases: tuple[str, ...]) -> list[str]:
     normalized_query = normalize(query)
-    matched_terms = {token for label in labels for token in _tokens(label)}
-    matched_phrases = [phrase for phrase in phrases if _contains_phrase(normalized_query, phrase)]
-    found = []
+    matched_phrases = [p for p in phrases if _contains_phrase(normalized_query, p)]
+    scored = []
     for sentence in re.split(r"(?<=[.!?;])\s+|\n+", query):
-        sentence_tokens = _tokens(sentence)
-        direct = any(_contains_phrase(normalize(sentence), phrase) for phrase in matched_phrases)
-        overlap = sentence_tokens.intersection(matched_terms)
-        if direct or len(overlap) >= 2:
-            clean = sentence.strip(" \t\r\n-•")
-            if clean and clean not in found:
-                found.append(clean[:320])
+        clean = sentence.strip(" \t\r\n-•")
+        if not clean:
+            continue
+        direct = any(_contains_phrase(normalize(clean), p) for p in matched_phrases)
+        overlap = len(_tokens(clean) & tokens)
+        if direct or overlap:
+            scored.append((direct, overlap, clean))
+    scored.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    found: list[str] = []
+    for _direct, _overlap, clean in scored:
+        text = _window(clean, _surface_hits(clean, tokens))
+        if text not in found:
+            found.append(text)
         if len(found) >= 3:
             break
     if not found and matched_phrases:
         found.append(f"Expressão identificada no pedido: {matched_phrases[0]}.")
     return found
 
+def _best_label(rows: list[dict[str, Any]], query_tokens: set[str]):
+    best_cov, best_row, best_hit = 0.0, None, set()
+    for row in rows:
+        label_tokens = _tokens(row.get("name"))
+        if not label_tokens:
+            continue
+        hit = label_tokens & query_tokens
+        cov = len(hit) / len(label_tokens)
+        if cov > best_cov:
+            best_cov, best_row, best_hit = cov, row, hit
+    return best_cov, best_row, best_hit
+
 
 def _score_pathology(query: str, query_tokens: set[str], pathology: dict[str, Any],
                      causes: list[dict[str, Any]], tests: list[dict[str, Any]],
-                     solutions: list[dict[str, Any]]) -> tuple[int, list[str]]:
+                     solutions: list[dict[str, Any]],
+                     phrases: tuple[str, ...] = ()) -> tuple[int, list[str], dict[str, Any]]:
     code = str(pathology.get("code") or "")
     name = str(pathology.get("name") or "")
-    phrases = PATHOLOGY_TERMS.get(code, ())
-    if not name:
-        return 0, []
+    if not name or not query_tokens:
+        return 0, [], {}
+    nq = normalize(query)
     name_tokens = _tokens(name)
-    name_coverage = len(name_tokens.intersection(query_tokens)) / max(1, len(name_tokens))
-    direct_phrase = _contains_phrase(query, name)
-    alias_hits = [phrase for phrase in phrases if _contains_phrase(query, phrase)]
+    name_hit = name_tokens & query_tokens
+    name_cov = len(name_hit) / max(1, len(name_tokens))
+    direct_phrase = _contains_phrase(nq, name)
+    alias_hits = [p for p in phrases if _contains_phrase(nq, p)]
+    cause_cov, cause_row, cause_hit = _best_label(causes, query_tokens)
+    test_cov, test_row, test_hit = _best_label(tests, query_tokens)
+    sol_cov, sol_row, sol_hit = _best_label(solutions, query_tokens)
 
-    def coverage(rows: list[dict[str, Any]]) -> float:
-        scores = []
-        for row in rows:
-            label_tokens = _tokens(row.get("name"))
-            if label_tokens:
-                scores.append(len(label_tokens.intersection(query_tokens)) / len(label_tokens))
-        return max(scores, default=0.0)
+    fuzzy_terms = [name, *phrases, *(str(r.get("name") or "") for r in causes), *(str(r.get("name") or "") for r in tests)]
+    sentences = [normalize(part)[:400] for part in re.split(r"(?<=[.!?;])\s+|\n+", query) if part.strip()]
+    fuzzy_ratio, fuzzy_term = 0.0, ""
+    for term in fuzzy_terms:
+        normalized_term = normalize(term)
+        if len(normalized_term) < 9:
+            continue
+        for sentence in sentences:
+            if sentence:
+                ratio = SequenceMatcher(None, normalized_term, sentence).ratio()
+                if ratio > fuzzy_ratio:
+                    fuzzy_ratio, fuzzy_term = ratio, term
 
-    cause_coverage = coverage(causes)
-    test_coverage = coverage(tests)
-    solution_coverage = coverage(solutions)
-    fuzzy_terms = [name, *phrases, *(str(row.get("name") or "") for row in causes),
-                   *(str(row.get("name") or "") for row in tests)]
-    sentences = [normalize(part) for part in re.split(r"(?<=[.!?;])\s+|\n+", query) if part.strip()]
-    fuzzy_similarity = max((SequenceMatcher(None, normalize(term), sentence).ratio()
-                            for term in fuzzy_terms if len(normalize(term)) >= 9
-                            for sentence in sentences if sentence), default=0.0)
-    score = max(
-        96 if direct_phrase else 0,
-        94 if alias_hits else 0,
-        round(name_coverage * 84),
-        round(cause_coverage * 42),
-        round(test_coverage * 38),
-        round(solution_coverage * 24),
-        round(fuzzy_similarity * 72) if fuzzy_similarity >= 0.58 else 0,
-    )
-    if not query_tokens:
-        score = 0
-    labels = [name, *(row.get("name", "") for row in causes), *(row.get("name", "") for row in tests)]
-    evidence = _sentence_evidence(query, labels, phrases)
-    return min(score, 98), evidence
+    options = [
+        (96 if direct_phrase else 0, "name_phrase"),
+        (94 if alias_hits else 0, "alias"),
+        (round(name_cov * 84), "name_words"),
+        (round(cause_cov * 42), "cause"),
+        (round(test_cov * 38), "test"),
+        (round(sol_cov * 24), "solution"),
+        (round(fuzzy_ratio * 72) if fuzzy_ratio >= 0.58 else 0, "fuzzy"),
+    ]
+    score, channel = max(options, key=lambda o: o[0])
+    if score <= 0:
+        return 0, [], {}
+
+    coverage: float | None = None
+    evidence_phrases: tuple[str, ...] = ()
+    row = None
+    if channel == "name_phrase":
+        matched, evidence_phrases = set(name_tokens), (name,)
+        compared = {"kind": "Patologia", "code": code, "label": name}
+    elif channel == "alias":
+        matched = set().union(*(_tokens(p) for p in alias_hits))
+        evidence_phrases = tuple(alias_hits)
+        compared = {"kind": "Expressão do catálogo", "code": code, "label": alias_hits[0]}
+    elif channel == "name_words":
+        matched, coverage = set(name_hit), name_cov
+        compared = {"kind": "Patologia", "code": code, "label": name}
+    elif channel in ("cause", "test", "solution"):
+        matched, coverage, row = {"cause": (cause_hit, cause_cov, cause_row),
+                                  "test": (test_hit, test_cov, test_row),
+                                  "solution": (sol_hit, sol_cov, sol_row)}[channel]
+        kind = {"cause": "Causa", "test": "Ensaio", "solution": "Solução"}[channel]
+        compared = {"kind": kind, "code": (row or {}).get("code"), "label": (row or {}).get("name")}
+        matched = set(matched)
+    else:
+        matched = _tokens(fuzzy_term) & query_tokens
+        compared = {"kind": "Texto do catálogo", "code": code, "label": fuzzy_term}
+
+    non_structural = matched - STRUCTURAL_NOUNS
+    if channel in ("name_phrase", "alias"):
+        reliability = "alta"
+    elif channel == "name_words":
+        reliability = ("alta" if len(non_structural) >= 2 and name_cov >= 0.8
+                       else "média" if len(non_structural) >= 2 and name_cov >= 0.6 else "baixa")
+    elif channel == "test":
+        reliability = "média" if (test_cov >= 1.0 and len(non_structural) >= 2) else "baixa"
+    elif channel == "fuzzy":
+        reliability = "média" if fuzzy_ratio >= 0.8 else "baixa"
+    else:
+        reliability = "baixa"
+
+    surface = _surface_hits(query, matched)[:12]
+    missing: list[str] = []
+    label = compared.get("label")
+    if channel == "name_phrase":
+        explanation = f"O pedido contém a designação «{name}» tal como está no catálogo."
+    elif channel == "alias":
+        explanation = f"O pedido contém a expressão «{alias_hits[0]}», que o catálogo associa a esta patologia."
+    elif channel == "name_words":
+        missing = [w for w in WORD_RE.findall(name) if _canon(w) and _canon(w) not in query_tokens]
+        explanation = (f"{len(name_hit)} de {len(name_tokens)} palavras da designação aparecem no pedido "
+                       f"({', '.join(surface) or '—'}).")
+        if missing:
+            explanation += f" Faltam: {', '.join(missing)}."
+        if not non_structural:
+            explanation += " As palavras coincidentes só indicam o local (parede, pavimento…), não o problema; por isso a correspondência é fraca."
+    elif channel == "cause":
+        explanation = (f"A coincidência é com a causa «{label}» ({compared.get('code')}), que o catálogo liga a esta "
+                       "patologia. Uma causa possível não prova que a patologia exista.")
+    elif channel == "test":
+        explanation = (f"O pedido refere «{label}» ({compared.get('code')}), ensaio que o catálogo associa a esta "
+                       "patologia. Pedir um ensaio não indica que a patologia exista.")
+    elif channel == "solution":
+        explanation = (f"A coincidência é com a solução «{label}» ({compared.get('code')}). Uma solução de referência "
+                       "não prova que a patologia exista.")
+    else:
+        explanation = (f"Semelhança aproximada ({round(fuzzy_ratio * 100)}%) com «{label}». "
+                       "Pode ser coincidência de vocabulário.")
+
+    reasons = {"channel": channel, "channel_label": CHANNEL_LABEL[channel], "reliability": reliability,
+               "explanation": explanation, "matched_words": surface, "missing_words": missing,
+               "compared_with": compared, "coverage_percent": round(coverage * 100) if coverage is not None else None}
+    return min(score, 98), _sentence_evidence(query, matched, evidence_phrases), reasons
 
 
 def _linked_records(codes: Any, catalog: dict[str, dict[str, dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
@@ -265,10 +393,10 @@ async def _select_with_openai(query: str, candidates: list[dict[str, Any]]) -> t
 
 
 async def analyze_technical_diagnosis(raw_text: str, fields: dict[str, Any], token: str) -> dict[str, Any]:
-    """Rank KB pathologies, then optionally let the configured model select grounded candidates."""
+    """Ordena patologias da base, separa as fortes das fracas e explica cada correspondência."""
     query = _query_text(raw_text, fields)
     if not query:
-        return {"status": "no_evidence", "engine": "knowledge-base-fuzzy", "candidates": [],
+        return {"status": "no_evidence", "engine": "knowledge-base-fuzzy", "candidates": [], "weak_candidates": [],
                 "message": "Não há descrição técnica suficiente para mapear patologias."}
     normalized_query = normalize(query)
     electrical_context = any(term in normalized_query for term in (
@@ -280,7 +408,7 @@ async def analyze_technical_diagnosis(raw_text: str, fields: dict[str, Any], tok
         "armadura", "fissura", "estrutura", "parede", "cave", "revestimento", "cobertura",
     ))
     if electrical_context and not structural_context:
-        return {"status": "no_match", "engine": "knowledge-base-fuzzy", "candidates": [],
+        return {"status": "no_match", "engine": "knowledge-base-fuzzy", "candidates": [], "weak_candidates": [],
                 "message": ("A base de conhecimento instalada contém patologias de estruturas e edifícios, "
                             "mas ainda não tem uma classificação elétrica codificada. Não associei códigos "
                             "estruturais a falhas elétricas; é necessária uma taxonomia elétrica validada.")}
@@ -288,8 +416,29 @@ async def analyze_technical_diagnosis(raw_text: str, fields: dict[str, Any], tok
         knowledge = await load_knowledge_catalog(token)
     except Exception:
         return {"status": "knowledge_base_unavailable", "engine": "knowledge-base-fuzzy", "candidates": [],
+                "weak_candidates": [],
                 "message": "Não foi possível consultar a base técnica. Confirma as migrações e a ligação ao Supabase."}
 
+    materials = detect_materials(query)
+    timber_in_kb = any("madeira" in normalize(f"{row.get('name')} {row.get('group_name')}")
+                       for row in knowledge.get("pathologies", []))
+    if "madeira" in materials and "betao" not in materials and not timber_in_kb:
+        return {"status": "no_match", "engine": "knowledge-base-fuzzy", "candidates": [], "weak_candidates": [],
+                "message": ("O pedido refere estruturas de madeira, mas a base técnica instalada só contém patologias de "
+                            "betão, alvenaria, fundações e humidade. Não associei esses códigos a elementos de madeira; "
+                            "é necessária uma classificação de patologias de madeira (agentes xilófagos, fungos de "
+                            "podridão, etc.) validada por um engenheiro.")}
+    try:
+        term_rows = await rest(token, "kb_pathology_terms",
+                               params={"select": "pathology_code,term", "limit": "2000"})
+    except Exception:
+        term_rows = []
+    terms_by_code: dict[str, tuple[str, ...]] = {}
+    for term_row in term_rows if isinstance(term_rows, list) else []:
+        term_code = str(term_row.get("pathology_code") or "").strip()
+        term_text = str(term_row.get("term") or "").strip()
+        if term_code and term_text:
+            terms_by_code[term_code] = terms_by_code.get(term_code, ()) + (term_text,)                
     catalogs = {
         key: {str(row.get("code")): row for row in knowledge.get(key, []) if row.get("code")}
         for key in ("causes", "tests", "solutions")
@@ -299,8 +448,9 @@ async def analyze_technical_diagnosis(raw_text: str, fields: dict[str, Any], tok
     ranked = []
     for pathology in knowledge.get("pathologies", []):
         linked = _linked_records(pathology, catalogs)
-        score, evidence = _score_pathology(query, query_tokens, pathology,
-                                           linked["causes"], linked["tests"], linked["solutions"])
+        score, evidence, reasons = _score_pathology(query, query_tokens, pathology,
+                                                    linked["causes"], linked["tests"], linked["solutions"],
+                                                    terms_by_code.get(str(pathology.get("code") or ""), ()))
         if score < 16:
             continue
         sev_min = int(pathology.get("sev_min") or 1)
@@ -309,21 +459,26 @@ async def analyze_technical_diagnosis(raw_text: str, fields: dict[str, Any], tok
         ranked.append({
             "code": pathology.get("code"), "name": pathology.get("name"),
             "group": pathology.get("group_name"), "severity_min": sev_min, "severity_max": sev_max,
-            "severity": severity, "match_percent": score, "evidence": evidence,
+            "severity": severity, "match_percent": score, "evidence": evidence, "reasons": reasons,
             "causes": linked["causes"], "tests": linked["tests"], "solutions": linked["solutions"],
             "not_in_manual": bool(pathology.get("not_in_manual")),
         })
     ranked.sort(key=lambda item: (item["match_percent"], bool(item["evidence"])), reverse=True)
-    shortlist = ranked[:12]
-    selected, used_openai = await _select_with_openai(query, shortlist)
+    strong = [r for r in ranked if r["reasons"].get("reliability") != "baixa"]
+    weak = [r for r in ranked if r["reasons"].get("reliability") == "baixa"]
+    selected, used_openai = await _select_with_openai(query, strong[:12])
     candidates = selected[:3]
     if candidates:
         message = ("Correspondências preliminares à base técnica. Confirma sintomas, ensaios e causas "
                    "em vistoria; o valor percentual mede aderência textual, não probabilidade de diagnóstico.")
         status = "matched"
+    elif weak:
+        message = ("A base técnica só encontrou correspondências fracas para este pedido. Não foram usadas no orçamento; "
+                   "podes ver abaixo porquê. É necessária triagem técnica manual.")
+        status = "no_match"
     else:
         message = ("A base técnica não contém correspondência suficientemente apoiada por este pedido. "
                    "É necessária triagem técnica manual antes de recomendar patologia ou ensaio codificado.")
         status = "no_match"
     return {"status": status, "engine": "openai+knowledge-base" if used_openai else "knowledge-base-fuzzy",
-            "message": message, "candidates": candidates}
+            "message": message, "candidates": candidates, "weak_candidates": weak[:3]}
