@@ -1,4 +1,6 @@
-"""Reconstrói o âmbito de uma proposta nova a partir de propostas anteriores semelhantes."""
+"""Reconstrói o âmbito de uma proposta nova a partir de propostas anteriores semelhantes.
+
+Só usa propostas aprovadas/enviadas/aceites (rascunhos não são referência) e do mesmo material."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,11 +8,14 @@ from typing import Any
 
 from app.proposal_library import match_request_to_prior_proposals
 from app.services.field_activities import CONDITIONAL, _item_rows
+from app.services.material_guard import detect_materials, request_text
+from app.services.pdf_knowledge import _material_compatible
 from app.supabase_rest import rest
 
 MIN_MATCH = 35      # ignora propostas anteriores pouco parecidas (%)
 MIN_SHARE = 0.5     # o serviço tem de constar em pelo menos metade (ponderada) das propostas parecidas
 MAX_ADDED = 15
+TRUSTED_STATUSES = ("APPROVED", "SENT", "CLIENT_REVIEW", "ACCEPTED")
 CLIENT_CONDITION = "Executar se a inspeção de campo confirmar a necessidade desta atividade."
 
 
@@ -26,7 +31,16 @@ def _none(message: str) -> dict[str, Any]:
     return {"added": [], "flags": [{"severity": "INFO", "code": "PRIOR_SUMMARY", "message": message}]}
 
 
+def _in(values: list[str]) -> str:
+    return "in.(" + ",".join(values) + ")"
+
+
 async def add_prior_proposal_activities(token: str, proposal_id: str, request_id: str) -> dict[str, Any]:
+    current = await rest(token, "proposal_requests", params={
+        "id": f"eq.{request_id}", "select": "raw_text,extracted_fields", "limit": "1"})
+    current = current[0] if isinstance(current, list) and current else {}
+    materials = detect_materials(request_text(current.get("extracted_fields") or {}, current.get("raw_text") or ""))
+
     matches = await match_request_to_prior_proposals(
         request_id=request_id, user=SimpleNamespace(token=token))
     similar = [m for m in matches if m.get("source") == "generated" and m.get("id")
@@ -34,17 +48,32 @@ async def add_prior_proposal_activities(token: str, proposal_id: str, request_id
     if not similar:
         return _none("Não há propostas anteriores geradas suficientemente parecidas para servir de referência.")
 
-    statuses = await rest(token, "proposals", params={
-        "id": "in.(" + ",".join(str(m["id"]) for m in similar) + ")", "select": "id,status"})
-    excluded = {str(r["id"]) for r in (statuses if isinstance(statuses, list) else [])
-                if r.get("status") in {"CANCELLED", "REJECTED"}}
-    similar = [m for m in similar if str(m["id"]) not in excluded]
+    props = await rest(token, "proposals", params={
+        "id": _in([str(m["id"]) for m in similar]), "select": "id,status,request_id"})
+    trusted = {str(r["id"]): r for r in (props if isinstance(props, list) else [])
+               if r.get("status") in TRUSTED_STATUSES}
+    similar = [m for m in similar if str(m["id"]) in trusted]
     if not similar:
-        return _none("As propostas anteriores parecidas foram canceladas ou recusadas; não foram usadas.")
+        return _none("Não há propostas anteriores aprovadas ou enviadas parecidas; os rascunhos não são usados "
+                     "como referência.")
+
+    request_ids = sorted({str(trusted[str(m["id"])].get("request_id")) for m in similar
+                          if trusted[str(m["id"])].get("request_id")})
+    compatible: set[str] = set()
+    if request_ids:
+        req_rows = await rest(token, "proposal_requests", params={
+            "id": _in(request_ids), "select": "id,raw_text,extracted_fields"})
+        for r in req_rows if isinstance(req_rows, list) else []:
+            text = request_text(r.get("extracted_fields") or {}, r.get("raw_text") or "")
+            if _material_compatible(materials, text[:20000]):
+                compatible.add(str(r["id"]))
+    similar = [m for m in similar if str(trusted[str(m["id"])].get("request_id")) in compatible]
+    if not similar:
+        return _none("As propostas anteriores parecidas são de outro material; não foram usadas.")
 
     ids = [str(m["id"]) for m in similar]
     rows = await rest(token, "proposal_items", params={
-        "proposal_id": "in.(" + ",".join(ids) + ")", "enabled": "eq.true",
+        "proposal_id": _in(ids), "enabled": "eq.true",
         "select": "proposal_id,service_id,quantity", "limit": "5000"})
     rows = rows if isinstance(rows, list) else []
 
@@ -79,7 +108,7 @@ async def add_prior_proposal_activities(token: str, proposal_id: str, request_id
         per_proposal = found[sid]
         refs = ", ".join(label[p] for p in list(per_proposal)[:4])
         quantities = ", ".join(sorted({q for q in (_qty(v) for v in per_proposal.values()) if q}))
-        reason = (f"Consta em {count} de {len(similar)} propostas anteriores semelhantes ({refs})."
+        reason = (f"Consta em {count} de {len(similar)} propostas anteriores aprovadas semelhantes ({refs})."
                   + (f" Quantidades anteriores: {quantities}." if quantities else ""))
         activities.append({
             "service_id": sid, "name": service.get("name"), "unit": service.get("unit"),
@@ -107,7 +136,7 @@ async def add_prior_proposal_activities(token: str, proposal_id: str, request_id
             added = [str(r.get("service_id")) for r in inserted if r.get("service_id")]
 
     names = [str(catalog[s].get("name")) for s in added if s in catalog][:8]
-    summary = (f"Propostas anteriores semelhantes consultadas: {len(similar)} "
+    summary = (f"Propostas anteriores aprovadas semelhantes consultadas: {len(similar)} "
                f"({', '.join(label[i] for i in ids[:4])}); {len(added)} serviço(s) acrescentado(s) a partir delas"
                + (": " + ", ".join(names) + "." if names else "."))
     return {"added": added, "flags": [{"severity": "INFO", "code": "PRIOR_SUMMARY", "message": summary}]}

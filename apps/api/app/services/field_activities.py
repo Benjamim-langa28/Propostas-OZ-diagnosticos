@@ -381,7 +381,6 @@ def plan_field_activities(*, fields: dict[str, Any], rules: list[dict[str, Any]]
                     reason=f"Ensaio {test_code} sugerido pela base técnica para {path_label}"
                            + (" (correspondência textual forte; indicador, não decisivo)" if strong else ""),
                     condition=f"Executar se a inspeção de campo confirmar indícios compatíveis com {path_label} (ensaio {test_code}).",
-                    technical_basis=f"Ensaio {test_code} associado a {path_label} na base técnica. Aderência textual {round(test_score)}% (indicativa; não prova que o ensaio seja necessário).",
                 )
     if electrical_only:
         for service_id, keywords in ELECTRICAL_SERVICE_KEYWORDS:

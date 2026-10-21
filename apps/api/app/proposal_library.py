@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import re
 import mimetypes
 import unicodedata
@@ -15,9 +16,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from app.auth import CurrentUser, current_user
 from app.documents import MAX_UPLOAD_BYTES, extract_upload
 from app.email_intake import looks_like_email, parse_email_request
+from app.services.material_guard import detect_materials, request_text
+from app.services.proposal_reader import get_reading, read_and_store, reprocess_one, reprocess_pending
 from app.storage import delete_document, signed_document_url, upload_document
 from app.supabase_rest import rest
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/proposal-library", tags=["proposal library"])
 BUCKET = "proposal-library"
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".txt", ".csv", ".eml"}
@@ -31,6 +35,7 @@ TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
 def _metadata(filename: str, content: str, requested_title: str) -> dict[str, Any]:
+    """Metadados por regras (ficam como reserva se a leitura com IA falhar)."""
     stem = PurePath(filename).stem.strip()
     flat = " ".join(content.split())
     email_fields = parse_email_request(content) if looks_like_email(content) else {}
@@ -57,7 +62,6 @@ def _metadata(filename: str, content: str, requested_title: str) -> dict[str, An
     client_name = ((para.group(1).strip() if para else None) or email_fields.get("client_name")
                    or (client_match.group(1).strip() if client_match else None))
 
-    # O resumo começa no "Objeto": o cabeçalho da empresa não deve entrar na comparação de semelhança.
     body = flat.split("1. Objeto", 1)[1] if "1. Objeto" in flat else flat
     project_type = (email_fields.get("categories") or [None])[0]
     return {
@@ -162,6 +166,18 @@ def _dedupe_similar_references(scored: list[dict[str, Any]], limit: int = MAX_RE
     return kept[:limit]
 
 
+def _label_compatible(request_materials: set[str], label: Any) -> bool:
+    """Compara o material do pedido com o material lido na proposta carregada."""
+    value = str(label or "").strip().lower()
+    if not request_materials or value in {"", "desconhecido", "outro", "misto"}:
+        return True
+    if "madeira" in request_materials and "betao" not in request_materials:
+        return value == "madeira"
+    if "madeira" in request_materials:
+        return True
+    return value != "madeira"
+
+
 @router.get("/matches")
 async def match_request_to_prior_proposals(
     request_id: str = Query(min_length=1, max_length=80),
@@ -207,6 +223,20 @@ async def match_request_to_prior_proposals(
             key = (str(row.get("source", "")), str(row.get("id", "")))
             if key[1] and row.get("request_id") != request_id:
                 candidates[key] = row
+
+    # Material: ignora propostas carregadas cujo material (lido com IA) não é compatível com o pedido.
+    uploaded_ids = [key[1] for key in candidates if key[0] == "uploaded"]
+    if uploaded_ids:
+        try:
+            material_rows = await rest(user.token, "proposal_library", params={
+                "id": "in.(" + ",".join(uploaded_ids) + ")", "select": "id,material", "limit": "500"})
+        except Exception:
+            material_rows = []  # a coluna ainda não existe: não filtra
+        labels = {str(r["id"]): r.get("material") for r in (material_rows if isinstance(material_rows, list) else [])}
+        request_materials = detect_materials(request_text(extracted, request.get("raw_text")))
+        for key in [k for k in candidates if k[0] == "uploaded"]:
+            if not _label_compatible(request_materials, labels.get(key[1])):
+                del candidates[key]
 
     scored: list[dict[str, Any]] = []
     for candidate in candidates.values():
@@ -279,7 +309,34 @@ async def upload_proposal_reference(
         raise
     except httpx.HTTPError as exc:
         raise HTTPException(502, "Não foi possível guardar esta proposta na biblioteca privada.") from exc
-    return rows[0]
+    record = rows[0]
+    # Leitura com IA no momento do carregamento (metadados e mapa de preços).
+    try:
+        reading = await read_and_store(user.token, user.id, record["id"], extracted_text,
+                                       title_is_auto=not title.strip())
+    except Exception:
+        logger.exception("Leitura com IA falhou para a proposta %s", record.get("id"))
+        reading = {"status": "FAILED", "note": "Erro ao ler a proposta com IA.", "items": 0}
+    return {**record, "extraction_status": reading["status"], "extraction_note": reading["note"],
+            "extraction_items": reading["items"]}
+
+
+@router.post("/reprocess")
+async def reprocess_pending_readings(user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    return await reprocess_pending(user.token, user.id)
+
+
+@router.post("/{record_id}/reprocess")
+async def reprocess_reading(record_id: str, user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    return await reprocess_one(user.token, user.id, record_id)
+
+
+@router.get("/{record_id}/reading")
+async def proposal_reading(record_id: str, user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
+    data = await get_reading(user.token, record_id)
+    if data is None:
+        raise HTTPException(404, "Esta referência não foi encontrada na tua biblioteca.")
+    return data
 
 
 @router.delete("/{record_id}")

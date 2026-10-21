@@ -18,7 +18,7 @@ from app.config import settings
 from app.documents import MAX_UPLOAD_BYTES, extract_mqt_rows, extract_upload, image_mime_type
 from app.email_intake import looks_like_email
 from app.ai.orchestrator import orchestrate_request_analysis, reconcile_missing
-from app.services.field_activities import _build_technical_basis, run_field_activity_engine
+from app.services.field_activities import _build_internal_note, _build_technical_basis, run_field_activity_engine
 from app.services.prior_proposals import add_prior_proposal_activities
 from app.services.item_details import build_item_details
 from app.services.pdf_knowledge import add_pdf_activities_to_proposal
@@ -502,11 +502,22 @@ async def list_services(user: CurrentUser = Depends(current_user)) -> list[dict[
                                                        "order": "category.asc,name.asc", "limit": "250"})
 
 
+def _without_trigger(note: Any) -> str:
+    return " | ".join(part for part in str(note or "").split(" | ") if not part.startswith("Disparo condicional:"))
+
+
 async def suggest_scope_items(token: str, owner_id: str, proposal_id: str, request_id: str,
                               fields: dict[str, Any], raw_text: str,
                               technical: dict[str, Any] | None) -> dict[str, Any]:
-    """Ordem: 1) propostas anteriores, 2) pedido e PDFs, 3) base de conhecimento.
+    """Ordem: 1) pedido do cliente e PDFs, 2) propostas anteriores aprovadas, 3) base de conhecimento.
     Depois aplica a guarda de material e a resolução de sobreposições."""
+    try:
+        pdf = await add_pdf_activities_to_proposal(token, proposal_id, request_id, fields, raw_text)
+    except Exception:
+        logger.exception("Consulta de PDFs falhou para o pedido %s", request_id)
+        pdf = {"added": [], "flags": [{
+            "severity": "WARNING", "code": "PDF_SOURCE",
+            "message": "A consulta do pedido e dos PDFs falhou; as atividades vieram de outras fontes."}]}
     try:
         prior = await add_prior_proposal_activities(token, proposal_id, request_id)
     except Exception:
@@ -514,29 +525,35 @@ async def suggest_scope_items(token: str, owner_id: str, proposal_id: str, reque
         prior = {"added": [], "flags": [{
             "severity": "WARNING", "code": "PRIOR_SOURCE",
             "message": "A consulta das propostas anteriores falhou; as atividades vieram de outras fontes."}]}
-    try:
-        pdf = await add_pdf_activities_to_proposal(token, proposal_id, request_id, fields, raw_text)
-    except Exception:
-        logger.exception("Consulta de PDFs falhou para o pedido %s", request_id)
-        pdf = {"added": [], "flags": [{
-            "severity": "WARNING", "code": "PDF_SOURCE",
-            "message": "A consulta dos PDFs falhou; as atividades vieram de outras fontes."}]}
     result = await run_field_activity_engine(token, owner_id, proposal_id, request_id, fields, raw_text, technical)
 
+    # As regras técnicas decidem o que é BASE: se um serviço já existia como condicional mas as
+    # regras o consideram BASE, sobe para BASE e a nota interna junta o motivo das regras.
     earlier = set(prior["added"]) | set(pdf["added"])
     by_id = {str(a.get("service_id")): a for a in result.get("activities", [])}
-    for sid in sorted(sid for sid, a in by_id.items() if a.get("activity_class") == "BASE" and sid in earlier):
+    promote = sorted(sid for sid, a in by_id.items() if a.get("activity_class") == "BASE" and sid in earlier)
+    if promote:
         try:
-            await rest(token, "proposal_items", method="PATCH",
-                       params={"proposal_id": f"eq.{proposal_id}", "service_id": f"eq.{sid}"},
-                       body={"activity_class": "BASE", "trigger_condition": None,
-                             "technical_basis": _build_technical_basis(by_id[sid])},
-                       prefer="return=minimal")
+            current_rows = await rest(token, "proposal_items", params={
+                "proposal_id": f"eq.{proposal_id}", "select": "service_id,internal_note", "limit": "5000"})
+            notes = {str(r.get("service_id")): r.get("internal_note") for r in
+                     (current_rows if isinstance(current_rows, list) else [])}
         except Exception:
-            logger.exception("Não foi possível promover %s a BASE na proposta %s", sid, proposal_id)
+            notes = {}
+        for sid in promote:
+            try:
+                merged = " | ".join(p for p in (_build_internal_note(by_id[sid]), _without_trigger(notes.get(sid))) if p)
+                await rest(token, "proposal_items", method="PATCH",
+                           params={"proposal_id": f"eq.{proposal_id}", "service_id": f"eq.{sid}"},
+                           body={"activity_class": "BASE", "trigger_condition": None,
+                                 "technical_basis": _build_technical_basis(by_id[sid]),
+                                 "internal_note": merged[:4000]},
+                           prefer="return=minimal")
+            except Exception:
+                logger.exception("Não foi possível promover %s a BASE na proposta %s", sid, proposal_id)
 
-    added_all = prior["added"] + pdf["added"] + result["added"]
-    flags = prior["flags"] + pdf["flags"] + result["flags"]
+    added_all = pdf["added"] + prior["added"] + result["added"]
+    flags = pdf["flags"] + prior["flags"] + result["flags"]
 
     # Guarda de material: num pedido só de madeira, desativa (não apaga) serviços próprios de betão.
     materials = detect_materials(request_text(fields, raw_text))

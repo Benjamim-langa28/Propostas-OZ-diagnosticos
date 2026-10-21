@@ -87,6 +87,8 @@ def _condition_sentence(condition: Any) -> str:
     text = " ".join(str(condition or "").split()).rstrip(".")
     if not text:
         return ""
+    if re.search(r"\b(PAT|ENS|CAU|SOL)-[A-Z0-9-]+", text):
+        return "Atividade condicional, a realizar se a inspeção de campo confirmar indícios que a justifiquem."
     if text[0].islower():
         return f"Atividade condicional, a realizar se {text}."
     return f"Atividade condicional. {text}."
@@ -260,8 +262,9 @@ def _reference_table(document, fields, proposal_no) -> None:
 def _annex(document, active, vat_rate, total, fields) -> None:
     document.add_page_break()
     _para(document, "MAPA DE QUANTIDADES E PREÇOS UNITÁRIOS", bold=True, align=CENTER, after=2)
-    if fields.get("project_name"):
-        _para(document, str(fields["project_name"]), italic=True, align=CENTER, after=8)
+    subtitle = fields.get("location") or fields.get("project_name")
+    if subtitle:
+        _para(document, str(subtitle), italic=True, align=CENTER, after=8)
     widths = [1.1, 7.2, 1.4, 1.3, 2.5, 2.5]
     table = document.add_table(rows=1, cols=6)
     table.style = "Table Grid"
@@ -296,12 +299,25 @@ def _annex(document, active, vat_rate, total, fields) -> None:
         _cell(merged, label, bold=strong, align=RIGHT)
         _cell(cells[5], _eur(amount), bold=strong, align=RIGHT)
 
+def _rank(item: dict[str, Any]) -> int:
+    """Ordem lógica: mobilização, inspeção, ensaios, trabalhos intrusivos, relatório no fim."""
+    sid = str(item.get("service_id") or "")
+    name = str(item.get("name") or "").lower()
+    if sid in {"MOB", "VERBA_LEV"}:
+        return 0
+    if sid in {"EST_VISUAL", "INSP_ANOM", "LEV_ANOM", "MAP_FISS", "LEV_DIM"}:
+        return 1
+    if sid.startswith("REL") or "relatório" in name:
+        return 9
+    if sid in {"ABERT_LOCAL", "EXPOS_ARM", "REM_REVEST", "INSP_INT", "FECHO_ABERT", "REP_REVEST"}:
+        return 5
+    return 3
 
 def build_proposal_docx(request_row: dict[str, Any], proposal: dict[str, Any],
                         items: list[dict[str, Any]], analysis: dict[str, Any] | None = None) -> bytes:
     fields = request_row.get("extracted_fields") or {}
     active = [i for i in items if i.get("enabled", True)]
-    active.sort(key=lambda r: (_num(r.get("position")), str(r.get("created_at") or "")))
+    active.sort(key=lambda r: (_rank(r), _num(r.get("position")), str(r.get("created_at") or "")))
     vat_rate = _num(proposal.get("vat_rate"), 23.0)
     pending = [i for i in active if _num(i.get("unit_price")) <= 0]
     total = sum(_num(i.get("quantity")) * _num(i.get("unit_price")) for i in active if _num(i.get("unit_price")) > 0)
@@ -323,7 +339,11 @@ def build_proposal_docx(request_row: dict[str, Any], proposal: dict[str, Any],
 
     _heading(document, "1", "Objeto")
     _para(document, str(fields.get("objective") or request_row.get("title") or "A definir."))
-    place = ", ".join(str(p) for p in (fields.get("project_name"), fields.get("location")) if p)
+    project = " ".join(str(fields.get("project_name") or "").split())
+    location = " ".join(str(fields.get("location") or "").split())
+    if re.match(r"(?i)^(para\s+)?(inspe|diagn|pedido|proposta|ensaio)", project) or len(project) > 90:
+        project = ""  # parece o assunto do email e não o nome da obra
+    place = ", ".join(p for p in (project, location) if p)
     if place:
         _para(document, f"Obra: {place}.")
 
@@ -337,7 +357,7 @@ def build_proposal_docx(request_row: dict[str, Any], proposal: dict[str, Any],
             _dash(document, line)
     conditions = _lines(fields.get("requested_conditions"))
     if conditions:
-        _para(document, "O Cliente solicitou ainda:", after=3)
+        _para(document, "Pontos adicionais solicitados pelo Cliente, a esclarecer antes do envio:", after=3)
         for line in conditions:
             _dash(document, line)
     _para(document, "Descrevem-se, a seguir, as condições técnicas da prestação de serviços.")
@@ -352,7 +372,9 @@ def build_proposal_docx(request_row: dict[str, Any], proposal: dict[str, Any],
         paragraph.paragraph_format.keep_with_next = True
         paragraph.add_run(f"3.{number}.\u2002{item.get('name') or ''}").bold = True
         if item.get("technical_basis"):
-            _para(document, str(item["technical_basis"]).strip(), after=3)
+            basis = re.split(r"\s*Condição de execução:", str(item["technical_basis"]))[0].strip()
+            if basis and "Aderência textual" not in basis and "base técnica" not in basis:
+                _para(document, basis, after=3)
         _para(document, f"Quantidade prevista: {_qty(item.get('quantity'))} {item.get('unit') or ''}.".strip(), after=3)
         if item.get("activity_class") == "CONDITIONAL" and item.get("trigger_condition"):
             _para(document, _condition_sentence(item["trigger_condition"]), italic=True, after=3)
